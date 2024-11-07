@@ -89,6 +89,7 @@ uniform mat4 viewProj;
 
 uniform int NumberOfBounces = 4;
 uniform int NumberOfRays = 5;
+uniform int DebugMode = 0;
 
 highp float rand(inout vec2 co)
 {
@@ -251,7 +252,7 @@ HitInfo RayAllSpheres(Ray ray){
     return closestHit;
 }
 
-HitInfo RayAllMeshes(Ray ray){
+HitInfo RayAllMeshes(Ray ray, inout int numTriTests){
     HitInfo closestHit;
     closestHit.didHit = false;
     closestHit.hitPoint = vec3(0.0);
@@ -266,6 +267,7 @@ HitInfo RayAllMeshes(Ray ray){
         }
 
         for(int i = 0; i < meshInfo.numTriangles; i++){
+            numTriTests++;
             uint tri = meshInfo.firstTriangleIndex + i;
             Triangle triangle = Triangles[tri];
             HitInfo hitInfo = RayTriangle(ray,triangle, meshInfo.material);
@@ -302,13 +304,14 @@ vec3 RandomDirectionHemsiphere(vec3 normal, inout vec2 state){
 vec3 FullTrace(Ray ray, inout vec2 state){
     vec3 rayColor = vec3(1,1,1);
     vec3 rayLight = vec3(0,0,0);
+    int numTriTests = 0;
 
     for(int i = 0; i < NumberOfBounces; i++){
         HitInfo hitInfo;
         hitInfo.didHit = false;
 
         HitInfo hitInfoSphere = RayAllSpheres(ray);
-        HitInfo hitInfoMesh = RayAllMeshes(ray);
+        HitInfo hitInfoMesh = RayAllMeshes(ray, numTriTests);
 
         if(hitInfoSphere.didHit){
             hitInfo = hitInfoSphere;
@@ -338,8 +341,9 @@ vec3 FullTrace(Ray ray, inout vec2 state){
             break;
         }
     }
-
-    return rayLight;
+    float debugTests = numTriTests / 2000.0;
+    vec3 debugColor = debugTests < 1 ? vec3(debugTests) : vec3(1,0,0);
+    return DebugMode == 0 ? rayLight : debugColor;
 }
 
 void main() {

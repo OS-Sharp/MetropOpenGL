@@ -1,5 +1,12 @@
 #include"RayScene.h";
 #include "ComputeStructures.h"
+#include <chrono>
+#include"Text.h"
+
+    int frameCount = 0;
+    float fps = 0.0f;
+    std::chrono::time_point<std::chrono::steady_clock> lastTime = std::chrono::steady_clock::now();
+    int debugMode = 0;
 
     RayScene::RayScene(Window& win) :
         SCREEN_WIDTH(win.width),
@@ -10,7 +17,26 @@
         oldTex(SCREEN_WIDTH, SCREEN_HEIGHT, 1,1),
         averageTex(SCREEN_WIDTH, SCREEN_HEIGHT, 2, 2),
         camera(SCREEN_WIDTH, SCREEN_HEIGHT, glm::vec3(0.0f, 0.0f, -5.0f)),
-        model("models/pipe.obj") {}
+        model("models/BlenderMonkey.obj"), textShader("text_vertex.vert", "text_fragment.frag"),
+        text(SCREEN_WIDTH, SCREEN_HEIGHT, "fonts/Raleway-Black.ttf")
+    {
+        
+    }
+
+
+    void updateFPS() {
+        frameCount++;
+
+        // Get the current time
+        auto currentTime = std::chrono::steady_clock::now();
+        std::chrono::duration<float> elapsed = currentTime - lastTime;
+
+        if (elapsed.count() >= 1.0f) { // Update every 1 second
+            fps = frameCount / elapsed.count(); // Calculate FPS
+            frameCount = 0; // Reset frame count
+            lastTime = currentTime; // Reset time
+        }
+    }
 
     void RayScene::AddMeshes() {
 
@@ -116,7 +142,26 @@
 
     }
 
+    bool wasPressed = false;
     void RayScene::OnBufferSwap(Window& win) {
+
+        if (glfwGetKey(win.instance, GLFW_KEY_B) == GLFW_PRESS && !wasPressed)
+        {
+            debugMode = 1 - debugMode;
+            std::cout << 1;
+            wasPressed = true;
+        }
+        else if (glfwGetKey(win.instance, GLFW_KEY_B) == GLFW_RELEASE) {
+            wasPressed = false;
+        }
+
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        updateFPS();
+
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        
+        SceneVAO.Bind();
 
         bool hasMoved = camera.Inputs(win.instance);
         camera.UpdateMatrix(45.0f, 0.1f, 100.0f);
@@ -141,8 +186,7 @@
 
         AddSurfaces(); // Only update surfaces if necessary
         AddMeshes();
-
-      
+  
         computeShader.Activate();
 
         computeShader.SetParameterColor(glm::vec3(0.1f, 0.2f, 0.5f), "SkyColourHorizon");
@@ -153,6 +197,7 @@
         computeShader.SetParameterFloat(55.0f, "SunFocus");
         computeShader.SetParameterFloat(2.0f, "SunIntensity");
         computeShader.SetParameterFloat(0.0f, "SunThreshold");
+        computeShader.SetParameterInt(debugMode, "DebugMode");
 
         computeShader.SetParameterInt(4, "NumberOfBounces");
         computeShader.SetParameterInt(3, "NumberOfRays");
@@ -165,12 +210,16 @@
 
         shader.SetParameterInt(Frame, "Frame");
 
-
-
-        SceneVAO.Bind();
+        shader.Activate();
+    
         glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
 
         computeShader.DeleteSSBOs();
+        textShader.Activate();
+        // Update the FPS counter
+
+        // Display FPS (for example, printing to console)
+        text.RenderText(textShader, "fps: " + std::to_string(static_cast<int>(fps)), 25.0f, 25.0f, 1.0f, glm::vec3(1.0f, 1.0f, 1.0f));
     }
 
     void RayScene::OnWindowLoad(Window& win) {

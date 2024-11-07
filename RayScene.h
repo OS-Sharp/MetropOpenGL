@@ -7,6 +7,7 @@
 #include "Shader.h"
 #include "Model.h"
 #include "ASSIMP.cpp"
+#include "Text.h"
 
 class RayScene : public Scene {
 public:
@@ -15,6 +16,7 @@ public:
 
     Shader computeShader;
     Shader shader;
+    Shader textShader;
 
     Texture tex;
     Texture oldTex;
@@ -26,6 +28,8 @@ public:
     VAO SceneVAO;
     std::unique_ptr<VBO> SceneVBO;
     std::unique_ptr<EBO> SceneEBO;
+
+    GLUTText text;
 
     int Frame = 0;
 

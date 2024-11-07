@@ -15,6 +15,8 @@
 #include"Camera.h"
 #include "RayScene.h"
 
+
+
 int main() 
 {
 	Window win("Metropolis", 1400, 800);
