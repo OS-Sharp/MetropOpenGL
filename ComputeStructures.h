@@ -15,12 +15,19 @@ struct alignas(16) Material {
 	alignas(16) glm::vec3 smoothness;
 	alignas(16) glm::vec3 specularChance = glm::vec3(0,0,0);
 	alignas(16) glm::vec3 specularColor = glm::vec3(1, 1, 1);;
+	alignas(16) glm::vec3 opacity = glm::vec3(1, 1, 1);;
 };
 
 struct alignas(16) TraceCircle {
 	alignas(16) Material material;
 	alignas(16) glm::vec3 position;
 	alignas(16) float radius;
+};
+
+struct alignas(16) TraceDebugBox {
+	alignas(16) Material material;
+	alignas(16) glm::vec3 position;
+	alignas(16) glm::vec3 size;
 };
 
 struct alignas(16) CameraSettings {

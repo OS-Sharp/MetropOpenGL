@@ -17,7 +17,7 @@
         oldTex(SCREEN_WIDTH, SCREEN_HEIGHT, 1,1),
         averageTex(SCREEN_WIDTH, SCREEN_HEIGHT, 2, 2),
         camera(SCREEN_WIDTH, SCREEN_HEIGHT, glm::vec3(0.0f, 0.0f, -5.0f)),
-        model("models/BlenderMonkey.obj"), textShader("text_vertex.vert", "text_fragment.frag"),
+        model("models/Pipe.obj"), textShader("text_vertex.vert", "text_fragment.frag"),
         text(SCREEN_WIDTH, SCREEN_HEIGHT, "fonts/Raleway-Black.ttf")
     {
         
@@ -43,49 +43,19 @@
         std::vector<Triangle> triangles = {};
         std::vector<MeshInfo> meshes = {};
 
+        Material material;
 
-            for (int a = 0; a < model.mesh_list.size(); a++) {
-                auto mesh = model.mesh_list[a];
-                std::vector<Triangle> meshTriangles = {};
+        material.emmisionColor = glm::vec3(1.0f, 1.0f, 1.0f);
+        material.emmisionStrength = glm::vec3(0, 0, 0);
+        material.diffuseColor = glm::vec3(0.1f, 0.1f, 0.1f);
+        material.specularChance = glm::vec3(0.4f, 0, 0);
+        material.smoothness = glm::vec3(1.0f, 0, 0);
+        material.opacity = glm::vec3(1.0f, 0, 0);
 
-                std::vector<glm::vec3> positions = {};
-                std::vector<glm::vec3> normals = {};
+        model.ToMeshInfo(triangles, meshes, material);
 
-                for (int b = 0; b < mesh.vert_indices.size(); b++) {
-                    positions.push_back(mesh.vert_positions[mesh.vert_indices[b]] * 10.0f + glm::vec3(0,0,16));
-                    normals.push_back(mesh.vert_normals[mesh.vert_indices[b]]);
-                    if ((b + 1) % 3 == 0) {
-                        Triangle triangle;
 
-                        triangle.P1 = positions[0];
-                        triangle.P2 = positions[1];
-                        triangle.P3 = positions[2];
-
-                        triangle.NormP1 = normals[0];
-                        triangle.NormP2 = normals[1];
-                        triangle.NormP3 = normals[2];
-
-                        meshTriangles.push_back(triangle);
-
-                        positions.clear();
-                        normals.clear();
-                    }
-                }
-                
-                MeshInfo meshInfo = MeshInfo::createMeshFromTris(triangles.size(), meshTriangles);
-                Material material;
-
-                material.emmisionColor = glm::vec3(1.0f, 1.0f, 1.0f);
-                material.emmisionStrength = glm::vec3(0, 0, 0);
-                material.diffuseColor = glm::vec3(0.1f, 0.1f, 0.1f);
-                material.specularChance = glm::vec3(0.4f, 0, 0);
-                material.smoothness = glm::vec3(1.0f, 0, 0);
-                meshInfo.material = material;
-                meshes.push_back(meshInfo);
-                triangles.insert(triangles.end(), meshTriangles.begin(), meshTriangles.end());
-            }
-        
-
+        //THESE WORK TOGETHER
         computeShader.StoreSSBO<MeshInfo>(meshes, 7);
         computeShader.StoreSSBO<Triangle>(triangles, 8);
         computeShader.StoreSSBO<GLuint>(static_cast<GLuint>(meshes.size()), 9);
@@ -140,6 +110,25 @@
         computeShader.StoreSSBO<TraceCircle>(circles, 4);
         computeShader.StoreSSBO<GLuint>(static_cast<GLuint>(circles.size()), 5);
 
+        std::vector<TraceDebugBox> boxes = {};
+
+        TraceDebugBox box;
+        Material matBox;
+
+        matBox.emmisionColor = glm::vec3(1.0f, 1.0f, 1.0f);
+        matBox.emmisionStrength = glm::vec3(0.0f, 0.0f, 0.0f);
+        matBox.diffuseColor = glm::vec3(0.9f, 0.4f, 0.4f);
+        matBox.specularChance = glm::vec3(0.0f, 0, 0);
+        matBox.smoothness = glm::vec3(0.0f, 0, 0);
+        matBox.opacity = glm::vec3(0.1f, 0, 0);
+
+        box.material = matBox;
+        box.position = glm::vec3(2.0f, 2.0f, 10.0f);
+        box.size = glm::vec3(2.0f, 2.0f, 2.0f);
+        boxes.push_back(box);
+
+        computeShader.StoreSSBO<TraceDebugBox>(boxes, 10);
+        computeShader.StoreSSBO<GLuint>(static_cast<GLuint>(boxes.size()), 11);
     }
 
     bool wasPressed = false;

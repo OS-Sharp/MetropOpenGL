@@ -10,6 +10,7 @@
 #include<glm/gtx/vector_angle.hpp>
 #include <map>
 #include "Shader.h"
+#include "VAO.h"
 
 class GLUTText {
     public:
@@ -22,7 +23,8 @@ class GLUTText {
         };
 
         std::map<GLchar, Character> Characters;
-        GLuint VAO, VBO;
+        VAO VAO;
+        VBO VBO;
         int SCREEN_WIDTH, SCREEN_HEIGHT;
 
         int initText(const char* font);

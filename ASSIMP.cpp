@@ -12,6 +12,7 @@
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 #include<stb/stb_image.h>
+#include "ComputeStructures.h"
 
 class ASSModel
 {
@@ -54,6 +55,46 @@ public:
 
 		load_model(); // Uncomment only one of these two load model functions.
 		// load_model_cout_console();
+	}
+
+	void ToMeshInfo(std::vector<Triangle>& triangles, std::vector<MeshInfo>& meshInfos, Material material) {
+		
+		std::vector<std::pair<MeshInfo, std::vector<Triangle>>> info;
+
+		for (int a = 0; a < mesh_list.size(); a++) {
+			auto mesh = mesh_list[a];
+			std::vector<Triangle> meshTriangles = {};
+
+			std::vector<glm::vec3> positions = {};
+			std::vector<glm::vec3> normals = {};
+
+			for (int b = 0; b < mesh.vert_indices.size(); b++) {
+				positions.push_back(mesh.vert_positions[mesh.vert_indices[b]] * 10.0f + glm::vec3(0, 0, 16));
+				normals.push_back(mesh.vert_normals[mesh.vert_indices[b]]);
+				if ((b + 1) % 3 == 0) {
+					Triangle triangle;
+
+					triangle.P1 = positions[0];
+					triangle.P2 = positions[1];
+					triangle.P3 = positions[2];
+
+					triangle.NormP1 = normals[0];
+					triangle.NormP2 = normals[1];
+					triangle.NormP3 = normals[2];
+
+					meshTriangles.push_back(triangle);
+
+					positions.clear();
+					normals.clear();
+				}
+			}
+
+			MeshInfo meshInfo = MeshInfo::createMeshFromTris(triangles.size(), meshTriangles);
+			meshInfo.material = material;
+
+			meshInfos.push_back(meshInfo);
+			triangles.insert(triangles.end(), meshTriangles.begin(), meshTriangles.end());
+		}
 	}
 
 private:
