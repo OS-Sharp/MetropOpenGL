@@ -36,6 +36,14 @@ Shader::Shader(const char* vertexFile, const char* fragmentFile) {
 	glAttachShader(ID, fragmentShader);
 	glLinkProgram(ID);
 
+	GLint success;
+	glGetProgramiv(ID, GL_LINK_STATUS, &success);
+	if (!success) {
+		char infoLog[512];
+		glGetProgramInfoLog(ID, 512, NULL, infoLog);
+		std::cerr << "Shader Linking Error:\n" << infoLog << std::endl;
+	}
+
 	glDeleteShader(vertexShader);
 	glDeleteShader(fragmentShader);
 }
@@ -54,6 +62,14 @@ Shader::Shader(const char* computeFile) {
 	ID = glCreateProgram();
 	glAttachShader(ID, computeShader);
 	glLinkProgram(ID);
+
+	GLint success;
+	glGetProgramiv(ID, GL_LINK_STATUS, &success);
+	if (!success) {
+		char infoLog[512];
+		glGetProgramInfoLog(ID, 512, NULL, infoLog);
+		std::cerr << "Shader Linking Error:\n" << infoLog << std::endl;
+	}
 
 	glDeleteShader(computeShader);
 }

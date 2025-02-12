@@ -7,52 +7,53 @@
 #include<glm/gtx/rotate_vector.hpp>
 #include<glm/gtx/vector_angle.hpp>
 #include <vector>
+#include <limits>
 
 struct alignas(16) Material {
-	alignas(16) glm::vec3 emmisionStrength;
-	alignas(16) glm::vec3 emmisionColor;
-	alignas(16) glm::vec3 diffuseColor;
-	alignas(16) glm::vec3 smoothness;
-	alignas(16) glm::vec3 specularChance = glm::vec3(0,0,0);
-	alignas(16) glm::vec3 specularColor = glm::vec3(1, 1, 1);;
-	alignas(16) glm::vec3 opacity = glm::vec3(1, 1, 1);;
+    alignas(16) glm::vec3 emmisionStrength;
+    alignas(16) glm::vec3 emmisionColor;
+    alignas(16) glm::vec3 diffuseColor;
+    alignas(16) glm::vec3 smoothness;
+    alignas(16) glm::vec3 specularChance = glm::vec3(0, 0, 0);
+    alignas(16) glm::vec3 specularColor = glm::vec3(1, 1, 1);
+    alignas(16) glm::vec3 opacity = glm::vec3(1, 1, 1);
 };
 
 struct alignas(16) TraceCircle {
-	alignas(16) Material material;
-	alignas(16) glm::vec3 position;
-	alignas(16) float radius;
+    alignas(16) Material material;
+    alignas(16) glm::vec3 position;
+    alignas(16) float radius;
 };
 
 struct alignas(16) TraceDebugBox {
-	alignas(16) Material material;
-	alignas(16) glm::vec3 position;
-	alignas(16) glm::vec3 size;
+    alignas(16) Material material;
+    alignas(16) glm::vec3 position;
+    alignas(16) glm::vec3 size;
 };
 
 struct alignas(16) CameraSettings {
-	alignas(16) glm::vec3 position;
-	alignas(16) glm::vec3 direction;
-	alignas(16) float fov;
+    alignas(16) glm::vec3 position;
+    alignas(16) glm::vec3 direction;
+    alignas(16) float fov;
 };
 
 struct alignas(16) Triangle {
-	alignas(16) glm::vec3 P1;
-	alignas(16) glm::vec3 P2;
-	alignas(16) glm::vec3 P3;
+    alignas(16) glm::vec3 P1;
+    alignas(16) glm::vec3 P2;
+    alignas(16) glm::vec3 P3;
 
-	alignas(16) glm::vec3 NormP1;
-	alignas(16) glm::vec3 NormP2;
-	alignas(16) glm::vec3 NormP3;
+    alignas(16) glm::vec3 NormP1;
+    alignas(16) glm::vec3 NormP2;
+    alignas(16) glm::vec3 NormP3;
 
-	// Static function to compute the normal of the triangle
-	static glm::vec3 getNormal(const Triangle& tri) {
-		glm::vec3 edge1 = tri.P2 - tri.P1;
-		glm::vec3 edge2 = tri.P3 - tri.P1;
-		glm::vec3 normal = glm::normalize(glm::cross(edge1, edge2));
-		return normal;
-	}
+    static glm::vec3 getNormal(const Triangle& tri) {
+        glm::vec3 edge1 = tri.P2 - tri.P1;
+        glm::vec3 edge2 = tri.P3 - tri.P1;
+        glm::vec3 normal = glm::normalize(glm::cross(edge1, edge2));
+        return normal;
+    }
 };
+
 
 struct alignas(16) MeshInfo {
 	alignas(16) glm::vec3 bMin;

@@ -159,6 +159,7 @@
     <ClInclude Include="ComputeStructures.h" />
     <ClInclude Include="EBO.h" />
     <ClInclude Include="default.frag" />
+    <ClInclude Include="BVHStructures.h" />
     <ClInclude Include="Libraries\include\json\json.h" />
     <ClInclude Include="Mesh.h" />
     <ClInclude Include="Model.h" />
