@@ -137,6 +137,9 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <None Include="accumulation.comp">
+      <FileType>Document</FileType>
+    </None>
     <ClCompile Include="ASSIMP.cpp" />
     <ClCompile Include="Camera.cpp" />
     <ClCompile Include="ComputeStructures.cpp" />
@@ -174,7 +177,7 @@
     <ClInclude Include="VBO.h" />
   </ItemGroup>
   <ItemGroup>
-    <None Include="compute.glsl" />
+    <None Include="compute.comp" />
     <None Include="default.vert" />
     <None Include="text_fragment.frag" />
     <None Include="text_vertex.vert" />

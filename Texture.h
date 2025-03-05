@@ -14,7 +14,7 @@ public:
 	GLuint unit;
 
 	Texture(const char* image, const char* texType, GLuint slot);
-	Texture(GLuint width, GLuint height, GLuint slot, GLuint binding, GLenum access = GL_READ_WRITE);
+	Texture(GLuint width, GLuint height, GLuint slot, GLuint binding, GLenum access = GL_READ_WRITE, GLenum format = GL_RGBA32F);
 
 	// Assigns a texture unit to a texture
 	void texUnit(Shader& shader, const char* uniform, GLuint unit);

@@ -10,21 +10,29 @@ std::chrono::time_point<std::chrono::steady_clock> lastTime = std::chrono::stead
 BVH sceneBVH;
 
 int DEBUGMODE = 0;
-int DEBUGTEST = 0;
-int DEBUGTHRESHOLD = 30;
-int RAYSPERPIXEL = 1;
-int BOUNCES = 2;
+
+const int DEBUGTEST = 0;
+const int DEBUGTHRESHOLD = 30;
+const int RAYSPERPIXEL = 0;
+const int BOUNCES = 6;
+
+
+const int LAYOUT_SIZE_X = 8;
+const int LAYOUT_SIZE_Y = 8;
+
+static auto startTime = std::chrono::steady_clock::now();
 
 RayScene::RayScene(Window& win) :
     SCREEN_WIDTH(win.width),
     SCREEN_HEIGHT(win.height),
     shader("default.vert", "default.frag"),
-    computeShader("compute.glsl"),
-    tex(SCREEN_WIDTH, SCREEN_HEIGHT, 0, 0),
+    computeShader("compute.comp"),
+    copyAccumShader("accumulation.comp"),
+    tex(SCREEN_WIDTH, SCREEN_HEIGHT, 0, 0, GL_READ_WRITE),
     oldTex(SCREEN_WIDTH, SCREEN_HEIGHT, 1, 1),
-    averageTex(SCREEN_WIDTH, SCREEN_HEIGHT, 2, 2),
+    averageTex(SCREEN_WIDTH, SCREEN_HEIGHT, 2, 2, GL_READ_WRITE, GL_R32I),
     camera(SCREEN_WIDTH, SCREEN_HEIGHT, glm::vec3(0.0f, 0.0f, -5.0f)),
-    model("models/Bob-omb Battlefield.obj"),
+    model("models/Dragon.obj"),
     textShader("text_vertex.vert", "text_fragment.frag"),
     text(SCREEN_WIDTH, SCREEN_HEIGHT, "fonts/Raleway-Black.ttf")
 {
@@ -132,7 +140,7 @@ void RayScene::AddSurfaces() {
     box.material = matBox;
     box.position = glm::vec3(2.0f, 2.0f, 10.0f);
     box.size = glm::vec3(2.0f, 2.0f, 2.0f);
-    boxes.push_back(box);
+    //boxes.push_back(box);
 
     // Upload boxes to binding 7 and their count to binding 8.
     computeShader.StoreSSBO<TraceDebugBox>(boxes, 7);
@@ -141,6 +149,11 @@ void RayScene::AddSurfaces() {
 
 bool wasPressed = false;
 void RayScene::OnBufferSwap(Window& win) {
+
+    auto currentTimePoint = std::chrono::steady_clock::now();
+    std::chrono::duration<float> elapsedSeconds = currentTimePoint - startTime;
+    float timeInSeconds = elapsedSeconds.count();
+
     if (glfwGetKey(win.instance, GLFW_KEY_B) == GLFW_PRESS && !wasPressed) {
         DEBUGMODE = 1 - DEBUGMODE;
         std::cout << 1;
@@ -162,7 +175,19 @@ void RayScene::OnBufferSwap(Window& win) {
     camera.UpdateMatrix(45.0f, 0.1f, 100.0f);
     camera.Matrix(computeShader, "viewProj");
 
-    if (hasMoved) Frame = 0;
+    if (hasMoved)
+    {
+        Frame = 0;
+        GLuint clearValue = 0;
+        glClearTexImage(averageTex.ID, 0, GL_RED_INTEGER, GL_UNSIGNED_INT, &clearValue);
+
+        // Define the clear color as a vec4 with all zeros
+        GLfloat clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+
+        // Clear the texture at mipmap level 0 using the format GL_RGBA and type GL_FLOAT.
+        glClearTexImage(tex.ID, 0, GL_RGBA, GL_FLOAT, clearColor);
+        glClearTexImage(oldTex.ID, 0, GL_RGBA, GL_FLOAT, clearColor);
+    }
 
     glMemoryBarrier(GL_ALL_BARRIER_BITS);
     glCopyImageSubData(tex.ID, GL_TEXTURE_2D, 0, 0, 0, 0,
@@ -186,10 +211,13 @@ void RayScene::OnBufferSwap(Window& win) {
 
     computeShader.Activate();
 
+    computeShader.SetParameterFloat(timeInSeconds, "uTime");
+
     computeShader.SetParameterColor(glm::vec3(0.1f, 0.2f, 0.5f), "SkyColourHorizon");
     computeShader.SetParameterColor(glm::vec3(0, 0.1f, 0.3f), "SkyColourZenith");
     computeShader.SetParameterColor(glm::normalize(glm::vec3(1.0f, -0.5f, -1.0f)), "SunLightDirection");
     computeShader.SetParameterColor(glm::vec3(0.1f, 0.1f, 0.1f), "GroundColor");
+
 
     computeShader.SetParameterFloat(55.0f, "SunFocus");
     computeShader.SetParameterFloat(2.0f, "SunIntensity");
@@ -201,7 +229,9 @@ void RayScene::OnBufferSwap(Window& win) {
     computeShader.SetParameterInt(DEBUGTHRESHOLD, "DebugThreshold");
     computeShader.SetParameterInt(DEBUGTEST, "DebugTest");
 
-    computeShader.Dispatch(SCREEN_WIDTH / 8, SCREEN_HEIGHT / 8, 1);
+    glMemoryBarrier(GL_ALL_BARRIER_BITS);
+    computeShader.Dispatch(SCREEN_HEIGHT / LAYOUT_SIZE_X, SCREEN_WIDTH / LAYOUT_SIZE_Y, 1);
+    glMemoryBarrier(GL_ALL_BARRIER_BITS);
 
     tex.texUnit(shader, "tex0", 0);
     oldTex.texUnit(shader, "tex1", 1);

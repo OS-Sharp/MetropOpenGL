@@ -1,0 +1,33 @@
+#version 430 core
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+// The final floating-point image (bound at 0)
+layout(rgba32f, binding = 0) uniform image2D screen;
+layout(rgba32f, binding = 1) uniform image2D oldScreen;
+layout(rgba32f, binding = 2) uniform image2D averageScreen;
+layout(std430, binding = 4) buffer Frames {
+    uint Frame;
+};
+// Uniforms for the image dimensions and our fixed-point scale factor.
+uniform int imageWidth;
+uniform int imageHeight;
+uniform float SCALE;
+
+void main() {
+    ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
+    if (pixel_coords.x >= imageWidth || pixel_coords.y >= imageHeight)
+        return;
+
+    int index = pixel_coords.y * imageWidth + pixel_coords.x;
+
+    vec3 color = imageLoad(screen, pixel_coords).rgb;
+
+    // Tone mapping and progressive accumulation
+    vec3 pixel = clamp(color, 0, 1);
+    vec3 old = imageLoad(oldScreen, pixel_coords).rgb;
+    float weight = 1.0 / (Frame + 1.0f);
+    vec3 average = old * (1.0f - weight) + pixel * weight;
+
+    imageStore(screen, pixel_coords, vec4(average, 1));
+}

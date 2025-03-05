@@ -150,13 +150,16 @@
     <None Include="default.vert">
       <Filter>Resource Files</Filter>
     </None>
-    <None Include="compute.glsl">
+    <None Include="compute.comp">
       <Filter>Resource Files</Filter>
     </None>
     <None Include="text_vertex.vert">
       <Filter>Resource Files</Filter>
     </None>
     <None Include="text_fragment.frag">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="accumulation.comp">
       <Filter>Resource Files</Filter>
     </None>
   </ItemGroup>

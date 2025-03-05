@@ -85,7 +85,7 @@ Texture::Texture(const char* image, const char* texType, GLuint slot)
 }
 
 
-Texture::Texture(GLuint width, GLuint height, GLuint slot, GLuint binding, GLenum access)
+Texture::Texture(GLuint width, GLuint height, GLuint slot, GLuint binding, GLenum access, GLenum format)
 {
 	type = "diffuse";
 	unit = slot;
@@ -101,7 +101,7 @@ Texture::Texture(GLuint width, GLuint height, GLuint slot, GLuint binding, GLenu
 	glTexParameteri(ID, GL_TEXTURE_WRAP_T, GL_REPEAT);
 
 	glTextureStorage2D(ID, 1, GL_RGBA32F, width, height);
-	glBindImageTexture(binding, ID, 0, GL_FALSE, 0, access, GL_RGBA32F);
+	glBindImageTexture(binding, ID, 0, GL_FALSE, 0, access, format);
 }
 
 void Texture::texUnit(Shader& shader, const char* uniform, GLuint unit)

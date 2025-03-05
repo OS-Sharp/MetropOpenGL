@@ -16,6 +16,7 @@ public:
 
     Shader computeShader;
     Shader shader;
+    Shader copyAccumShader;
     Shader textShader;
 
     Texture tex;
