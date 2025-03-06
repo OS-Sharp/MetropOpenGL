@@ -8,3 +8,7 @@
 *.json
 /.vs
 /MetropOpenGL/x64
+*.exe
+*.pdb
+x64/Debug/MetropOpenGL.exe
+x64/Debug/MetropOpenGL.pdb

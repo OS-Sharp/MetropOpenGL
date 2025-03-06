@@ -17,7 +17,7 @@ const int RAYSPERPIXEL = 1;
 const int METROPLIS_MUTATIONS = 100;
 const int BOUNCES = 6;
 
-const bool METROPLIS_MODE = true;
+const bool METROPLIS_MODE = false;
 
 const int LAYOUT_SIZE_X = 8;
 const int LAYOUT_SIZE_Y = 8;
