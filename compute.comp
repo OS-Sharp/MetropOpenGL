@@ -3,7 +3,6 @@
 #define M_PI 3.14159265358979323846
 
 ///////////////////////////////////////////////////////////////////////////////
-//                                                                           //
 //                    METROPOLIS LIGHT TRANSPORT COMPUTE SHADER              //
 //                                                                           //
 // This shader implements a Metropolis Light Transport (MLT) algorithm for   //
@@ -16,7 +15,6 @@
 //   - Weighted per-pixel averaging with atomic counters                     //
 //   - BVH traversal for scene geometry                                      //
 //   - Supports debugging and tone mapping                                  //
-//                                                                           //
 ///////////////////////////////////////////////////////////////////////////////
 
 ///////////////////////////////
@@ -58,6 +56,7 @@ struct DebugBox {
 // Triangle primitive for mesh intersections
 struct Triangle {
     vec3 posA, posB, posC;
+    vec3 normA, normB, normC;
 };
 
 // Mesh info (bounding box, material, triangle indices)
@@ -107,7 +106,7 @@ struct BVHNode {
 ///////////////////////////////
 
 // Work group dimensions
-layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
 
 // Image outputs
 layout(rgba32f, binding = 0) uniform image2D screen;       // Primary output image (float color)
@@ -184,15 +183,50 @@ uniform int NumberOfRays = 5;       // Mutation iterations per pixel
 uniform int DebugMode = 0;          // Debug mode (0: normal, 1: debug view)
 uniform int DebugThreshold = 20;
 uniform int DebugTest = 0;
+uniform bool METROPLIS = false;
 
 uniform int MutationType = 1;       // 0 = small perturbation, 1 = lens perturbation
+uniform int NumberOfMutations = 1;       // 0 = small perturbation, 1 = lens perturbation
 uniform float uTime;                // Time uniform for animation or randomization
+
+uniform	float DefocusStrength = 5.0f;
+uniform	float DivergeStrength = 5.3f;
+uniform	float FocusDistance = 2.0f;
 
 const int NUM_DEBUG_STATS = 5;
 
 ///////////////////////////////
 //    HELPER FUNCTIONS     //
 ///////////////////////////////
+
+uint wang_hash(inout uint seed)
+{
+    seed = uint(seed ^ uint(61)) ^ uint(seed >> uint(16));
+    seed *= uint(9);
+    seed = seed ^ (seed >> 4);
+    seed *= uint(0x27d4eb2d);
+    seed = seed ^ (seed >> 15);
+    return seed;
+}
+ 
+float RandomFloat01(inout uint state)
+{
+    return float(wang_hash(state)) / 4294967296.0;
+}
+
+float hash21(vec2 p) {
+    p = fract(p * vec2(234.34, 435.345));
+    p += dot(p, p + 34.35);
+    return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+}
+
+float rand2(inout vec2 state) {
+    // Shuffle state
+    state = fract(state + 0.1234);
+    float r = hash21(state);
+    // Optionally do more scrambles to reduce correlation
+    return r;
+}
 
 // Generate a pseudo-random float in [0, 1] based on a 2D seed.
 highp float rand(inout vec2 co) {
@@ -202,9 +236,21 @@ highp float rand(inout vec2 co) {
     return fract(sin(dot(co, vec2(127.1, 311.7))) * 43758.5453);
 }
 
+vec3 CosineSampleHemisphere(vec3 normal, inout vec2 co)
+{
+    float z = rand(co) * 2.0 - 1.0;
+    float a = rand(co) * 2.0 * M_PI;
+    float r = sqrt(1.0 - z * z);
+    float x = r * cos(a);
+    float y = r * sin(a);
+
+    // Convert unit vector in sphere to a cosine weighted vector in hemisphere
+    return normalize(normal + vec3(x, y, z));
+}
+
 // Generate a normally distributed random value.
 float randNorm(inout vec2 co) {
-    float theta = 6.28318 * rand(co);
+    float theta = M_PI * 2 * rand(co);
     float rho = sqrt(-2.0 * log(rand(co)));
     return rho * cos(theta);
 }
@@ -214,12 +260,21 @@ vec3 RandomDirection(inout vec2 state) {
     return normalize(vec3(randNorm(state), randNorm(state), randNorm(state)));
 }
 
+vec2 RandomPointInCircle(inout vec2 state)
+{
+	float angle = rand(state) * 2 * M_PI;
+	vec2 pointOnCircle = vec2(cos(angle), sin(angle));
+	return pointOnCircle * sqrt(rand(state));
+}
+
 // Compute ambient light based on ray direction.
 vec3 GetAmbientLight(Ray ray) {
     float gradient = pow(smoothstep(0.0, 0.4, ray.direction.y), 0.35);
     vec3 gradientC = mix(SkyColourHorizon, SkyColourZenith, gradient);
-    float sun = pow(max(0.0, dot(ray.direction, -SunLightDirection) - SunThreshold), SunFocus) * SunIntensity;
+
     float groundToSkyT = smoothstep(-0.01, 0.0, ray.direction.y);
+
+    float sun = pow(max(0.0, dot(ray.direction, -SunLightDirection) - SunThreshold), SunFocus) * SunIntensity;
     float sunMask = groundToSkyT >= 1.0 ? 1.0 : 0.0;
     return mix(GroundColor, gradientC, groundToSkyT) + sun * sunMask;
 }
@@ -229,7 +284,8 @@ float wrapRange(float x, float minVal, float maxVal) {
     float range = maxVal - minVal;
     x = x - minVal;
     x = mod(x, range);
-    if (x < 0.0) x += range;
+    if (x < 0.0)
+        x += range;
     return x + minVal;
 }
 
@@ -244,7 +300,7 @@ vec2 wrapUV(vec2 uv, float aspect) {
 // Mutate a UV coordinate using an exponential radial distribution.
 vec2 lensPerturbation(vec2 uv, float aspect, float minPerturb, float maxPerturb, inout vec2 state) {
     float U_random = rand(state);
-    float R = maxPerturb * exp(-log(maxPerturb/minPerturb) * U_random);
+    float R = maxPerturb * exp(-log(maxPerturb / minPerturb) * U_random);
     float phi = (M_PI * 2.0) * rand(state);
     vec2 offset = vec2(R * cos(phi), R * sin(phi));
     vec2 mutatedUV = uv + offset;
@@ -258,13 +314,22 @@ bool RayIntersectsAABB(Ray ray, vec3 minBounds, vec3 maxBounds, out float tmin, 
         if (abs(ray.direction[i]) > 1e-6) {
             float t1 = (minBounds[i] - ray.origin[i]) / ray.direction[i];
             float t2 = (maxBounds[i] - ray.origin[i]) / ray.direction[i];
-            if (t1 > t2) { float tmp = t1; t1 = t2; t2 = tmp; }
+            if (t1 > t2) {
+                float tmp = t1;
+                t1 = t2;
+                t2 = tmp;
+            }
             tmin = max(tmin, t1);
             tmax = min(tmax, t2);
-            if (tmin > tmax) { tmin = 1e21; return false; }
-        }
-        else {
-            if (ray.origin[i] < minBounds[i] || ray.origin[i] > maxBounds[i]) { tmin = 1e21; return false; }
+            if (tmin > tmax) {
+                tmin = 1e21;
+                return false;
+            }
+        } else {
+            if (ray.origin[i] < minBounds[i] || ray.origin[i] > maxBounds[i]) {
+                tmin = 1e21;
+                return false;
+            }
         }
     }
     return true;
@@ -275,12 +340,10 @@ bool RayIntersectsAABB(Ray ray, vec3 minBounds, vec3 maxBounds) {
     return RayIntersectsAABB(ray, minBounds, maxBounds, d1, d2);
 }
 
-//================================================================
-// Ray–Object Intersection Functions
-// (Functions RayBox, RaySphere, RayTriangle, TraverseBVH, DebugRay,
-//  RayAllBoxes, RayAllSpheres, RayAllBVHMeshes)
-//  [These are unchanged from your original code, with comments retained]
-//================================================================
+///////////////////////////////
+//  RAY–OBJECT INTERSECTION  //
+//       FUNCTIONS           //
+///////////////////////////////
 
 HitInfo RayBox(Ray ray, vec3 minBounds, vec3 maxBounds, Material material) {
     HitInfo hitInfo;
@@ -291,16 +354,23 @@ HitInfo RayBox(Ray ray, vec3 minBounds, vec3 maxBounds, Material material) {
         if (abs(ray.direction[i]) > 1e-6) {
             float t1 = (minBounds[i] - ray.origin[i]) / ray.direction[i];
             float t2 = (maxBounds[i] - ray.origin[i]) / ray.direction[i];
-            if (t1 > t2) { float tmp = t1; t1 = t2; t2 = tmp; }
+            if (t1 > t2) {
+                float tmp = t1;
+                t1 = t2;
+                t2 = tmp;
+            }
             tmin = max(tmin, t1);
             tmax = min(tmax, t2);
-            if (tmin > tmax) return hitInfo;
+            if (tmin > tmax)
+                return hitInfo;
         } else if (ray.origin[i] < minBounds[i] || ray.origin[i] > maxBounds[i]) {
             return hitInfo;
         }
     }
-    if (tmin < 0.0) tmin = tmax;
-    if (tmin < 0.0) return hitInfo;
+    if (tmin < 0.0)
+        tmin = tmax;
+    if (tmin < 0.0)
+        return hitInfo;
     hitInfo.didHit = true;
     hitInfo.dst = tmin;
     hitInfo.hitPoint = ray.origin + ray.direction * tmin;
@@ -349,35 +419,61 @@ HitInfo RaySphere(Ray ray, vec3 sphereCenter, float sphereRadius, Material mater
 
 HitInfo RayTriangle(Ray ray, Triangle tri, Material material) {
     HitInfo hitInfo;
-    hitInfo.didHit = false; // Default to no hit
-    vec3 edgeAB = tri.posB - tri.posA;
-    vec3 edgeAC = tri.posC - tri.posA;
-    vec3 pvec = cross(ray.direction, edgeAC);
-    float det = dot(edgeAB, pvec);
+    hitInfo.didHit = false;
+    
+    // Compute the two edge vectors of the triangle.
+    vec3 edge1 = tri.posB - tri.posA;
+    vec3 edge2 = tri.posC - tri.posA;
+    
+    // Begin calculating determinant - also used to calculate u parameter.
+    vec3 pvec = cross(ray.direction, edge2);
+    float det = dot(edge1, pvec);
+    
+    // If the determinant is near zero, the ray lies in the plane of the triangle.
     if (abs(det) < 1e-4)
-        return hitInfo; // No hit
+        return hitInfo;
+    
     float invDet = 1.0 / det;
+    
+    // Calculate distance from vert0 to ray origin.
     vec3 tvec = ray.origin - tri.posA;
+    
+    // Calculate u parameter and test bounds.
     float u = dot(tvec, pvec) * invDet;
     if (u < 0.0 || u > 1.0)
         return hitInfo;
-    vec3 qvec = cross(tvec, edgeAB);
+    
+    // Prepare to test v parameter.
+    vec3 qvec = cross(tvec, edge1);
+    
+    // Calculate v parameter and test bounds.
     float v = dot(ray.direction, qvec) * invDet;
     if (v < 0.0 || u + v > 1.0)
         return hitInfo;
-    float t = dot(edgeAC, qvec) * invDet;
+    
+    // Calculate t, the distance along the ray.
+    float t = dot(edge2, qvec) * invDet;
     if (t < 1e-4)
-        return hitInfo; // Too close to the camera
+        return hitInfo; // Intersection is too close or behind the ray.
+    
+    // Valid intersection found.
     hitInfo.didHit = true;
     hitInfo.dst = t;
     hitInfo.hitPoint = ray.origin + ray.direction * t;
-    vec3 faceNormal = normalize(cross(edgeAB, edgeAC));
-    hitInfo.normal = faceNormal;
-    if (dot(hitInfo.normal, ray.direction) > 0.0)
-        hitInfo.normal = -hitInfo.normal;
+    
+    // Compute the face normal.
+    vec3 normal = normalize(cross(edge1, edge2));
+    
+    // For double-sided shading: flip the normal if it's facing the ray.
+    if (dot(normal, ray.direction) > 0.0)
+        normal = -normal;
+    
+    hitInfo.normal = normal;
     hitInfo.material = material;
+    
     return hitInfo;
 }
+
 
 HitInfo TraverseBVH(Ray ray, int nodeOffset, Material material, inout int tests[NUM_DEBUG_STATS]) {
     HitInfo closestHit;
@@ -385,12 +481,14 @@ HitInfo TraverseBVH(Ray ray, int nodeOffset, Material material, inout int tests[
     closestHit.dst = 1e20;
     if (!RayIntersectsAABB(ray, nodes[0].minBounds, nodes[0].maxBounds))
         return closestHit;
+
     const int MAX_STACK_SIZE = 32;  // Prevent stack overflow
     int stack[MAX_STACK_SIZE];
     int stackPtr = 0;
     stack[stackPtr++] = nodeOffset; // Start from the root node
     float d1 = 0.0, d2 = 0.0, d3 = 0.0;
     bool edgeHit = false;
+    
     while (stackPtr > 0) {
         int nodeIndex = stack[--stackPtr];
         BVHNode node = nodes[nodeIndex];
@@ -403,8 +501,7 @@ HitInfo TraverseBVH(Ray ray, int nodeOffset, Material material, inout int tests[
                 if (hit.didHit && hit.dst < closestHit.dst)
                     closestHit = hit;
             }
-        }
-        else {
+        } else {
             tests[0]++;
             int childIndexA = node.childIndex;
             int childIndexB = node.childIndex + 1;
@@ -447,7 +544,7 @@ bool DebugRay(vec3 rayOrigin, vec3 rayDir, vec3 start, vec3 end, out float debug
 HitInfo RayAllBoxes(Ray ray) {
     HitInfo closestHit;
     closestHit.didHit = false;
-    closestHit.dst = 1.0/0.0; // Infinity
+    closestHit.dst = 1.0 / 0.0; // Infinity
     closestHit.hitPoint = vec3(0.0);
     closestHit.normal = vec3(0.0);
     for (int i = 0; i < NumBoxes; i++) {
@@ -466,7 +563,7 @@ HitInfo RayAllSpheres(Ray ray) {
     closestHit.didHit = false;
     closestHit.hitPoint = vec3(0.0);
     closestHit.normal = vec3(0.0);
-    closestHit.dst = 1.0/0.0; // Infinity
+    closestHit.dst = 1.0 / 0.0; // Infinity
     for (int i = 0; i < NumSpheres; i++) {
         Sphere sphere = spheres[i];
         HitInfo hitInfo = RaySphere(ray, sphere.position, sphere.radius.x, sphere.material);
@@ -481,7 +578,7 @@ HitInfo RayAllBVHMeshes(Ray ray, inout int tests[NUM_DEBUG_STATS]) {
     closestHit.didHit = false;
     closestHit.hitPoint = vec3(0.0);
     closestHit.normal = vec3(0.0);
-    closestHit.dst = 1.0/0.0; // Infinity
+    closestHit.dst = 1.0 / 0.0; // Infinity
     for (int i = 0; i < NumModels; i++) {
         Model model = Models[i];
         HitInfo info = TraverseBVH(ray, model.NodeOffset, model.material, tests);
@@ -491,9 +588,9 @@ HitInfo RayAllBVHMeshes(Ray ray, inout int tests[NUM_DEBUG_STATS]) {
     return closestHit;
 }
 
-//================================================================
-// Ray Tracing Functions
-//================================================================
+///////////////////////////////
+//    RAY TRACING FUNCTIONS  //
+///////////////////////////////
 
 float SchlickApproximation(float cosine, float refractiveIndex) {
     float r0 = (1.0 - refractiveIndex) / (1.0 + refractiveIndex);
@@ -507,13 +604,13 @@ vec3 FullTrace(Ray ray, inout vec2 state) {
     int tests[NUM_DEBUG_STATS];
     for (int i = 0; i < NUM_DEBUG_STATS; i++)
         tests[i] = 0;
-    
+
     // Optional debug: if the ray is near a debug line, return red.
     vec3 debugStart = vec3(-1.0, 1.0, -3.0);
     vec3 debugEnd = vec3(1.0, 1.0, -3.0);
     float debugT;
-    if (DebugRay(ray.origin, ray.direction, debugStart, debugEnd, debugT))
-        return vec3(1.0, 0.0, 0.0); // Red debug line
+    //if (DebugRay(ray.origin, ray.direction, debugStart, debugEnd, debugT))
+    //    return vec3(1.0, 0.0, 0.0); // Red debug line
 
     for (int i = 0; i < NumberOfBounces; i++) {
         HitInfo hitInfo;
@@ -522,12 +619,14 @@ vec3 FullTrace(Ray ray, inout vec2 state) {
         HitInfo hitInfoSphere = RayAllSpheres(ray);
         HitInfo hitInfoMesh = RayAllBVHMeshes(ray, tests);
         HitInfo hitInfoBox = RayAllBoxes(ray);
+
         if (hitInfoSphere.didHit)
             hitInfo = hitInfoSphere;
         if (hitInfoMesh.didHit && hitInfoMesh.dst < hitInfo.dst)
             hitInfo = hitInfoMesh;
         if (hitInfoBox.didHit && hitInfoBox.dst < hitInfo.dst)
             hitInfo = hitInfoBox;
+
         if (hitInfo.didHit) {
             vec3 emission = hitInfo.material.emmisionColor * hitInfo.material.emmisionStrength.x;
             rayLight += emission * rayColor;
@@ -550,15 +649,22 @@ vec3 FullTrace(Ray ray, inout vec2 state) {
                 } else {
                     ray.direction = normalize(ray.direction);
                 }
-                ray.origin = hitInfo.hitPoint + ray.direction * 1e-4;
                 rayColor *= hitInfo.material.diffuseColor;
             } else {
                 // Opaque material handling
-                vec3 diffuseDir = normalize(normal + RandomDirection(state));
+                vec3 diffuseDir = normalize(CosineSampleHemisphere(normal, state));
                 vec3 specularDir = reflect(ray.direction, normal);
                 bool isSpecular = hitInfo.material.specularProbability.x >= rand(state);
                 ray.direction = mix(diffuseDir, specularDir, hitInfo.material.smoothness.x * float(isSpecular));
                 rayColor *= mix(hitInfo.material.diffuseColor, hitInfo.material.specularColor, float(isSpecular)) * opacity;
+
+                // Random early exit if ray colour is nearly 0 (can't contribute much to final result)
+				float p = max(rayColor.r, max(rayColor.g, rayColor.b));
+				if (rand(state) >= p) {
+					break;
+				}
+                ray.origin = hitInfo.hitPoint + ray.direction * 1e-4;
+				rayColor /= p;
             }
         } else {
             // No hit: accumulate ambient sky light and break
@@ -566,7 +672,7 @@ vec3 FullTrace(Ray ray, inout vec2 state) {
             break;
         }
     }
-    
+
     vec3 color;
     float debugThreshold = DebugThreshold;
     vec3 debugOverflowColor = vec3(1, 1, 0);
@@ -576,8 +682,8 @@ vec3 FullTrace(Ray ray, inout vec2 state) {
             break;
         case 1:
             color = (tests[DebugTest] < debugThreshold) ?
-                    vec3(tests[DebugTest] / float(debugThreshold)) :
-                    debugOverflowColor; // Green debug
+                        vec3(tests[DebugTest] / float(debugThreshold)) :
+                        debugOverflowColor; // Green debug
             break;
         default:
             color = rayLight; // Fallback color
@@ -590,7 +696,6 @@ vec3 FullTrace(Ray ray, inout vec2 state) {
 //  SCREEN COORDINATE HELPERS  //
 ///////////////////////////////
 
-// Convert a ray direction into UV coordinates [0,1] based on camera parameters.
 vec2 rayToUV(vec3 rayDir, vec3 cameraForward, float tanHalfFovY, float aspect) {
     vec3 F = normalize(cameraForward);
     vec3 R = normalize(cross(F, vec3(0, 1, 0)));
@@ -604,7 +709,6 @@ vec2 rayToUV(vec3 rayDir, vec3 cameraForward, float tanHalfFovY, float aspect) {
     return vec2((ndc_x + 1.0) * 0.5, (ndc_y + 1.0) * 0.5);
 }
 
-// Optionally convert a ray direction into normalized device coordinates.
 vec2 rayToNDC(vec3 rayDir, vec3 cameraForward, float tanHalfFovY, float aspect) {
     vec3 F = normalize(cameraForward);
     vec3 R = normalize(cross(F, vec3(0, 1, 0)));
@@ -619,113 +723,155 @@ vec2 rayToNDC(vec3 rayDir, vec3 cameraForward, float tanHalfFovY, float aspect) 
 }
 
 ///////////////////////////////
-//        MAIN FUNCTION     //
+//        MAIN FUNCTION      //
 ///////////////////////////////
 
 void main() {
     // Get the pixel coordinates and image dimensions.
     ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
     ivec2 dims = imageSize(screen);
-    
+
     // Convert pixel coordinates to normalized device coordinates [-1, 1].
     float u = (float(pixel_coords.x + 0.5) / float(dims.x)) * 2.0 - 1.0;
     float v = (float(pixel_coords.y + 0.5) / float(dims.y)) * 2.0 - 1.0;
     float aspectRatio = float(dims.x) / float(dims.y);
     u *= aspectRatio;
-    
+
     // Compute camera basis and field-of-view tangent.
     float fovTan = tan(radians(camera.fov.x) * 0.5);
     vec3 forward = normalize(camera.direction);
-    vec3 right = normalize(cross(forward, vec3(0,1,0)));
+    vec3 right = normalize(cross(forward, vec3(0, 1, 0)));
     vec3 up = cross(right, forward);
 
-     // Initialize the mutation state using the random sample.
+    // Initialize the mutation state using the random sample.
     vec2 currentState = vec2(u + float(Frame + uTime) * 0.09201489,
                              v + float(Frame + uTime) * 0.06101789);
 
     // Generate a random sample in UV space for the current pixel.
-    vec2 randomSample = vec2(rand(currentState), rand(currentState));
-    float u_random = randomSample.x * 2.0 - 1.0;
-    float v_random = randomSample.y * 2.0 - 1.0;
-    u_random *= aspectRatio;
-    vec2 rand_uv = vec2(u_random, v_random);
-    
-    // Compute the initial ray direction using the random UV.
-    vec3 rayDir = normalize(forward + u * fovTan * right + v * fovTan * up);
-    
-    // Initialize the mutation state using the random sample.
-    currentState = vec2(u_random + float(Frame + uTime) * 0.09201489,
-                             v_random + float(Frame + uTime) * 0.06101789);
-    
-    // Create the initial ray.
-    Ray ray;
-    ray.origin = camera.position;
-    ray.direction = rayDir;
-    
+
     // Trace the initial path sample.
-    vec3 currentSample = FullTrace(ray, currentState);
-    vec2 currentUV = rand_uv;
-    
-    // Mutation loop: perform Metropolis mutations for a number of iterations.
-    for (int i = 0; i < NumberOfRays; i++) {
-        vec3 candidateSample;
-        vec2 candidateState;
-        Ray candidateRay;
-        
-        // Perturb the current UV coordinate using an exponential radial lens perturbation.
-        vec2 usampleState = currentState + vec2(float(Frame + uTime) * 0.09201489,
-                                                float(Frame - uTime) * 0.06101789);
-        vec2 candidateUV = lensPerturbation(currentUV, aspectRatio, 0.0001, 5.0, usampleState);
-        
-        // Recompute candidate ray direction from the mutated UV.
-        vec3 candidateRayDir = normalize(forward + candidateUV.x * fovTan * right + candidateUV.y * fovTan * up);
-        candidateRay.origin = camera.position;
-        candidateRay.direction = candidateRayDir;
-        candidateState = candidateUV;
-        candidateSample = FullTrace(candidateRay, candidateState);
-        
-        // Compute the luminance of the current and candidate samples.
-        float currentLum = dot(currentSample, vec3(0.2126, 0.7152, 0.0722));
-        float candidateLum = dot(candidateSample, vec3(0.2126, 0.7152, 0.0722));
-        float acceptance = min(1.0, candidateLum / (currentLum + 1e-6));
-        
-        // Metropolis acceptance step.
-        if (rand(candidateState) < acceptance) {
-            currentState = candidateState;
-            currentSample = candidateSample;
-            ray = candidateRay;
-            currentUV = candidateUV;
-            
+    vec3 currentSample;
+
+    if (METROPLIS) {
+        vec2 randomSample = vec2(rand2(currentState), rand2(currentState));
+
+        float u_random = randomSample.x * 2.0 - 1.0;
+        float v_random = randomSample.y * 2.0 - 1.0;
+        u_random *= aspectRatio;
+        vec2 rand_uv = vec2(u_random, v_random);
+
+        vec2 currentUV = rand_uv;
+
+        // Reinitialize the mutation state.
+        currentState = vec2(u_random + float(Frame + uTime) * 0.09201489,
+                            v_random + float(Frame + uTime) * 0.06101789);
+
+        vec3 rayDir = normalize(forward + 
+             u_random * fovTan * right + 
+             v_random * fovTan * up);
+
+         Ray ray;
+         ray.origin = camera.position;
+         ray.direction = rayDir;
+
+        currentSample = FullTrace(ray, currentState);
+
+        // Mutation loop: perform Metropolis mutations for a number of iterations.
+        for (int i = 0; i < NumberOfMutations; i++) {
+            vec3 candidateSample;
+            vec2 candidateState;
+            Ray candidateRay;
+
+            // Perturb the current UV coordinate using an exponential radial lens perturbation.
+            vec2 usampleState = currentState + vec2(float(Frame + uTime) * 0.09201489,
+                                                    float(Frame - uTime) * 0.06101789);
+            vec2 candidateUV = lensPerturbation(currentUV, aspectRatio, 0.0001, 5.0, usampleState);
+
+            // Recompute candidate ray direction from the mutated UV.
+            vec3 candidateRayDir = normalize(forward + candidateUV.x * fovTan * right + candidateUV.y * fovTan * up);
+            candidateRay.origin = camera.position;
+            candidateRay.direction = candidateRayDir;
+            candidateState = candidateUV;
+            candidateSample = FullTrace(candidateRay, candidateState);
+
+            // Compute the luminance of the current and candidate samples.
+            float currentLum = dot(currentSample, vec3(0.2126, 0.7152, 0.0722));
+            float candidateLum = dot(candidateSample, vec3(0.2126, 0.7152, 0.0722));
+            float acceptance = min(1.0, candidateLum / (currentLum + 1e-6));
+
+            // Metropolis acceptance step.
+            if (rand(candidateState) < acceptance) {
+                currentState = candidateState;
+                currentSample = candidateSample;
+                ray = candidateRay;
+                currentUV = candidateUV;              
+            }
+
             // Compute pixel coordinates from the updated ray direction.
-            vec2 uv = rayToUV(ray.direction, forward, fovTan, aspectRatio);
-            int x = int(uv.x * float(dims.x));
-            int y = int(uv.y * float(dims.y));
-            ivec2 candidatePixel = ivec2(x, y);
-            
-            // Atomically update the per-pixel sample counter.
-            uint count = imageAtomicAdd(averageScreen, candidatePixel, 1u) + 1u;
-            
-            // Load the current accumulated color.
-            vec4 oldColor = imageLoad(screen, candidatePixel);
-            
-            // Compute a new weighted average for the pixel color.
-            vec4 newColor = (oldColor * float(count - 1) + vec4(currentSample, 1.0)) / float(count);
-            newColor = clamp(newColor, 0.0, 1.0);
-            
-            // Ensure all image accesses are complete before storing.
-            memoryBarrierImage();
-            imageStore(screen, candidatePixel, newColor);
+                vec2 uv = vec2((currentUV.x + 1.0) * 0.5, (currentUV.y + 1.0) * 0.5);
+                int x = int(uv.x * float(dims.x));
+                int y = int(uv.y * float(dims.y));
+                ivec2 candidatePixel = ivec2(x, y);
+
+                // Load the current accumulated color.
+                vec4 oldColor = imageLoad(screen, candidatePixel);
+                int count = int(oldColor.a);
+
+                // Compute a new weighted average for the pixel color.
+                vec4 newColor = (oldColor * float(count) + vec4(currentSample, 1.0)) / (float(count) + 1.0f);
+                newColor = clamp(newColor, 0.0, 1.0);
+
+                memoryBarrierImage();
+                memoryBarrier();
+                // Ensure all image accesses are complete before storing.
+                vec4 alphaAdd = vec4(newColor.rgb, oldColor.a + 1.0f);
+                imageStore(screen, candidatePixel, alphaAdd);
         }
+    } 
+    else {
+        currentState = vec2(u + float(Frame + uTime) * 0.09201489,
+                            v + float(Frame + uTime) * 0.06101789);
+    
+        vec3 rayDir = normalize(forward + u * fovTan * right + v * fovTan * up);
+    
+        vec3 totalSample = vec3(0.0);
+        vec2 stateCopy = currentState;  // Create a copy of the state
+
+
+        for (int i = 0; i < NumberOfRays; i++) {
+             Ray ray;
+
+             vec2 defocusJitter = RandomPointInCircle(stateCopy) * DefocusStrength / dims.x;
+		     vec3 rayOrigin = camera.position + right * defocusJitter.x + up * defocusJitter.y;
+
+             vec3 focusPoint = camera.position + rayDir * FocusDistance;
+
+             vec2 jitter = RandomPointInCircle(stateCopy) * DivergeStrength / dims.x;
+			 vec3 jitteredFocusPoint = focusPoint + right * jitter.x + up * jitter.y;
+
+             ray.origin = rayOrigin;
+             ray.direction = normalize(jitteredFocusPoint - rayOrigin);
+             totalSample += FullTrace(ray, stateCopy);
+             // Optionally update stateCopy to get a new seed per iteration
+             stateCopy = vec2(rand(stateCopy), rand(stateCopy));
+        }
+        currentSample = totalSample / float(NumberOfRays + 1);
     }
-    
+
     // Retrieve the final color for the current pixel.
-    vec3 color = imageLoad(screen, pixel_coords).rgb;
-    
-    // Tone mapping and progressive accumulation.
-    vec3 pixel = clamp(currentSample, 0.0, 1.0);
-    vec3 old = imageLoad(oldScreen, pixel_coords).rgb;
-    float weight = 1.0 / (Frame + 1.0);
-    vec3 average = old * (1.0 - weight) + pixel * weight;
-    
-    imageStore(screen, pixel_coords, vec4(average, 1.0));
+    vec3 color;
+    if (METROPLIS) {
+        //color = imageLoad(screen, pixel_coords).rgb;
+        //imageStore(screen, pixel_coords, vec4(average, 1.0));
+    } else {
+        color = currentSample;
+
+        vec3 old = imageLoad(oldScreen, pixel_coords).rgb;
+        float weight = 1.0 / (Frame + 1.0);
+        vec3 average = clamp(old * (1.0 - weight) + color * weight, 0, 1);
+
+        imageStore(screen, pixel_coords, vec4(average, 1.0));
+    }
+
+
 }

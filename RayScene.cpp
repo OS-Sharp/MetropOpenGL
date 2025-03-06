@@ -13,12 +13,17 @@ int DEBUGMODE = 0;
 
 const int DEBUGTEST = 0;
 const int DEBUGTHRESHOLD = 30;
-const int RAYSPERPIXEL = 0;
-const int BOUNCES = 6;
+const int RAYSPERPIXEL = 1;
+const int METROPLIS_MUTATIONS = 100;
+const int BOUNCES = 3;
 
+const bool METROPLIS_MODE = false;
 
 const int LAYOUT_SIZE_X = 8;
 const int LAYOUT_SIZE_Y = 8;
+
+const int METROPLIS_DISPATCH_X = 16;
+const int METROPLIS_DISPATCH_Y = 16;
 
 static auto startTime = std::chrono::steady_clock::now();
 
@@ -30,22 +35,50 @@ RayScene::RayScene(Window& win) :
     copyAccumShader("accumulation.comp"),
     tex(SCREEN_WIDTH, SCREEN_HEIGHT, 0, 0, GL_READ_WRITE),
     oldTex(SCREEN_WIDTH, SCREEN_HEIGHT, 1, 1),
-    averageTex(SCREEN_WIDTH, SCREEN_HEIGHT, 2, 2, GL_READ_WRITE, GL_R32I),
+    averageTex(SCREEN_WIDTH, SCREEN_HEIGHT, 2, 2, GL_READ_WRITE, GL_R32UI),
     camera(SCREEN_WIDTH, SCREEN_HEIGHT, glm::vec3(0.0f, 0.0f, -5.0f)),
-    model("models/Dragon.obj"),
+    model("models/BOTTLE MID POLY.obj"),
     textShader("text_vertex.vert", "text_fragment.frag"),
     text(SCREEN_WIDTH, SCREEN_HEIGHT, "fonts/Raleway-Black.ttf")
 {
+    /*
     Material material;
-    material.emmisionColor = glm::vec3(1.0f, 1.0f, 1.0f);
+    material.emmisionColor = glm::vec3(0.0f, 0.0f, 0.0f);
     material.emmisionStrength = glm::vec3(0, 0, 0);
-    material.diffuseColor = glm::vec3(0.1f, 0.1f, 0.1f);
-    material.specularChance = glm::vec3(0.4f, 0, 0);
-    material.smoothness = glm::vec3(1.0f, 0, 0);
-    material.opacity = glm::vec3(1.0f, 0, 0);
+    material.diffuseColor = glm::vec3(0.8f, 0.3f, 0.3f);
+    material.specularChance = glm::vec3(0.2f, 0, 0);
+    material.smoothness = glm::vec3(0.4f, 0, 0);
 
-    std::vector<Triangle> modelTris = model.ToTriangles(material, 1, glm::vec3(1, 1, 1));
-    sceneBVH.AddModel(modelTris, material);
+    ASSModel dragon("models/FilchCorridor.obj");
+    std::vector<Triangle> dragonTris = dragon.ToTriangles(material, 0.001f, glm::vec3(0, 0, 0));
+    sceneBVH.AddModel(dragonTris, material);
+    */
+
+    /*
+    Material material;
+    material.emmisionColor = glm::vec3(0.0f, 0.0f, 0.0f);
+    material.emmisionStrength = glm::vec3(0, 0, 0);
+    material.diffuseColor = glm::vec3(1.0f, 1.0f, 1.0f);
+    material.specularChance = glm::vec3(0.8f, 0, 0);
+    material.smoothness = glm::vec3(1.0f, 0, 0);
+
+    ASSModel dragon("models/Dragon.obj");
+    std::vector<Triangle> dragonTris = dragon.ToTriangles(material, 1.0f, glm::vec3(0, 0, 0));
+    sceneBVH.AddModel(dragonTris, material);
+    */
+
+    
+    Material material;
+    material.emmisionColor = glm::vec3(0.0f, 0.0f, 0.0f);
+    material.emmisionStrength = glm::vec3(0, 0, 0);
+    material.diffuseColor = glm::vec3(1.0f, 1.0f, 1.0f);
+    material.specularChance = glm::vec3(0.2f, 0, 0);
+    material.smoothness = glm::vec3(0.2, 0, 0);
+    
+    ASSModel dragon("models/Chess_Set_Joined1.obj");
+    std::vector<Triangle> dragonTris = dragon.ToTriangles(material, 1.0f, glm::vec3(0, 0, 0));
+    sceneBVH.AddModel(dragonTris, material);
+    
 }
 
 void updateFPS() {
@@ -66,7 +99,7 @@ void updateFPS() {
 void RayScene::AddMeshes() {
     // Upload triangle data.
     // (Assuming sceneBVH.Triangles is of type BVHTriangle or compatible with Triangle)
-    computeShader.StoreSSBO<BVHTriangle>(sceneBVH.Triangles, 9);
+    computeShader.StoreSSBO<Triangle>(sceneBVH.Triangles, 9);
     // (If you no longer need to upload a separate triangle count, omit it.)
 
     // Upload BVH node array to binding 11 and its count to binding 12.
@@ -84,6 +117,7 @@ void RayScene::AddMeshes() {
 //
 void RayScene::AddSurfaces() {
     std::vector<TraceCircle> circles;
+    /*
     const float noOfCircles = 5;
     for (int i = 0; i < noOfCircles; i++) {
         TraceCircle circle;
@@ -113,17 +147,65 @@ void RayScene::AddSurfaces() {
     circle.position = glm::vec3(0, -10.0f, 11.0f);
     circle.radius = 10.0f;
     circles.push_back(circle);
+    */
+
+
 
     TraceCircle circle2;
     Material material2;
     material2.emmisionColor = glm::vec3(1.0f, 1.0f, 1.0f);
-    material2.emmisionStrength = glm::vec3(10.0f, 10.0f, 10.0f);
+    //material2.emmisionStrength = glm::vec3(4.0f, 4.0f, 4.0f);
+    material2.emmisionStrength = glm::vec3(31.0f, 31.0f, 31.0f);
     material2.diffuseColor = glm::vec3(1.0f, 1.0f, 1.0f);
+    material2.specularChance = glm::vec3(1.0f, 0, 0);
+    material2.smoothness = glm::vec3(1.0f, 0, 0);
+
     circle2.material = material2;
-    circle2.position = glm::vec3(0, 10.0f, 30.0f);
-    circle2.radius = 7.0f;
+    //circle2.position = glm::vec3(35.0f , 40.0f, 0.0f);
+    circle2.position = glm::vec3(0.0f , 10.0f, -60.0f);
+    circle2.radius = 12.0f;
+
     circles.push_back(circle2);
 
+    TraceCircle circleFar;
+    circleFar.material = material2;
+    circleFar.position = glm::vec3(0.0f , 60.0f, 0.0f);
+    //circleFar.position = glm::vec3(5.0f, 00.0f, 20.0f);
+    circleFar.radius = 10.0f;
+
+    circles.push_back(circleFar);
+
+    TraceCircle reflective;
+    Material material3;
+    material3.emmisionColor = glm::vec3(1.0f, 1.0f, 1.0f);
+    material3.emmisionStrength = glm::vec3(0.0f);
+    material3.diffuseColor = glm::vec3(0.0f);
+    material3.specularChance = glm::vec3(0.4f, 0, 0);
+    material3.smoothness = glm::vec3(1.0f, 0, 0);
+
+    material3.opacity = glm::vec3(1.0f, 0, 0);    
+
+    reflective.material = material3;
+    reflective.position = glm::vec3(0, 10.0f, 0.0f);
+    reflective.radius = 7.0f;
+    circles.push_back(reflective);
+
+    TraceCircle reflective2;
+    Material material4;
+    material4.emmisionColor = glm::vec3(1.0f, 1.0f, 1.0f);
+    material4.emmisionStrength = glm::vec3(0.0f);
+    material4.diffuseColor = glm::vec3(0.0f);
+    material4.specularChance = glm::vec3(0.9f, 0, 0);
+    material4.smoothness = glm::vec3(1.0f, 0, 0);
+
+    material4.opacity = glm::vec3(1.0f, 0, 0);
+
+    reflective2.material = material4;
+    reflective2.position = glm::vec3(0, 20.0f, 0.0f);
+    reflective2.radius = 5.0f;
+
+    circles.push_back(reflective2);
+    
     // Upload circles to binding 5 and their count to binding 6.
     computeShader.StoreSSBO<TraceCircle>(circles, 5);
     computeShader.StoreSSBO<GLuint>(static_cast<GLuint>(circles.size()), 6);
@@ -213,24 +295,31 @@ void RayScene::OnBufferSwap(Window& win) {
 
     computeShader.SetParameterFloat(timeInSeconds, "uTime");
 
-    computeShader.SetParameterColor(glm::vec3(0.1f, 0.2f, 0.5f), "SkyColourHorizon");
-    computeShader.SetParameterColor(glm::vec3(0, 0.1f, 0.3f), "SkyColourZenith");
+    computeShader.SetParameterColor(glm::vec3(1.0f, 1.0f, 1.0f), "SkyColourHorizon");
+    computeShader.SetParameterColor(glm::vec3(0.08f, 0.37f, 0.73f), "SkyColourZenith");
     computeShader.SetParameterColor(glm::normalize(glm::vec3(1.0f, -0.5f, -1.0f)), "SunLightDirection");
-    computeShader.SetParameterColor(glm::vec3(0.1f, 0.1f, 0.1f), "GroundColor");
+    computeShader.SetParameterColor(glm::vec3(0.35f, 0.3f, 0.35f), "GroundColor");
 
 
-    computeShader.SetParameterFloat(55.0f, "SunFocus");
-    computeShader.SetParameterFloat(2.0f, "SunIntensity");
+    computeShader.SetParameterFloat(500.0f, "SunFocus");
+    computeShader.SetParameterFloat(10.0f, "SunIntensity");
     computeShader.SetParameterFloat(0.0f, "SunThreshold");
     computeShader.SetParameterInt(DEBUGMODE, "DebugMode");
 
     computeShader.SetParameterInt(BOUNCES, "NumberOfBounces");
     computeShader.SetParameterInt(RAYSPERPIXEL, "NumberOfRays");
+    computeShader.SetParameterInt(METROPLIS_MUTATIONS, "NumberOfMutations");
     computeShader.SetParameterInt(DEBUGTHRESHOLD, "DebugThreshold");
     computeShader.SetParameterInt(DEBUGTEST, "DebugTest");
+    computeShader.SetParameterInt(METROPLIS_MODE, "METROPLIS");
 
     glMemoryBarrier(GL_ALL_BARRIER_BITS);
-    computeShader.Dispatch(SCREEN_HEIGHT / LAYOUT_SIZE_X, SCREEN_WIDTH / LAYOUT_SIZE_Y, 1);
+
+    int gX = METROPLIS_MODE ? METROPLIS_DISPATCH_X : SCREEN_WIDTH / LAYOUT_SIZE_X;
+    int gY = METROPLIS_MODE ? METROPLIS_DISPATCH_Y : SCREEN_HEIGHT / LAYOUT_SIZE_Y;
+    int gZ = 1;
+
+    computeShader.Dispatch(gX, gY, gZ);
     glMemoryBarrier(GL_ALL_BARRIER_BITS);
 
     tex.texUnit(shader, "tex0", 0);

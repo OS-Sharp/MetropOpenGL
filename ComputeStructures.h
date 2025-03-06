@@ -52,6 +52,10 @@ struct alignas(16) Triangle {
         glm::vec3 normal = glm::normalize(glm::cross(edge1, edge2));
         return normal;
     }
+
+	glm::vec3 Centre() const {
+		return (P1 + P2 + P3) / 3.0f;
+	}
 };
 
 

@@ -17,6 +17,7 @@ Window::Window(const char* name, const int width, const int height) :
 	glfwMakeContextCurrent(instance);
 	glfwSwapInterval(0);
 	gladLoadGL();
+	glDisable(GL_CULL_FACE);
 	glViewport(0, 0, width, height);
 }
 

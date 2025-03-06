@@ -43,10 +43,10 @@ struct BoundingBox {
         Max = glm::max(Max, point);
     }
 
-    void GrowToInclude(const BVHTriangle& triangle) {
-        GrowToInclude(triangle.A);
-        GrowToInclude(triangle.B);
-        GrowToInclude(triangle.C);
+    void GrowToInclude(const Triangle& triangle) {
+        GrowToInclude(triangle.P1);
+        GrowToInclude(triangle.P2);
+        GrowToInclude(triangle.P3);
     }
 };
 
@@ -72,7 +72,7 @@ struct alignas(16) BVHModel {
 // BVH Class with SAH splitting and separate ChooseSplit function.
 class BVH {
 public:
-    std::vector<BVHTriangle> Triangles;
+    std::vector<Triangle> Triangles;
     std::vector<BVHModel> Models;
     std::vector<std::unique_ptr<BVHNode>> Nodes;
     std::vector<BVHNode> FlatNodes;
@@ -107,9 +107,7 @@ public:
 
         // Create triangles and update the root bounds
         for (size_t i = 0; i < triangles.size(); i++) {
-            Triangles.emplace_back(triangles[i].P1,
-                triangles[i].P2,
-                triangles[i].P3);
+            Triangles.push_back(triangles[i]);
 
             Root->Bounds.GrowToInclude(Triangles[i + triOffset]);
         }
@@ -133,7 +131,7 @@ public:
     }
 
 private:
-    const int MaxDepth = 16;
+    const int MaxDepth = 32;
 
     // Helper: Compute the surface area of a bounding box.
     float SurfaceArea(const BoundingBox& box) const {
