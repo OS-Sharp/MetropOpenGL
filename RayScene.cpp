@@ -17,7 +17,7 @@ const int RAYSPERPIXEL = 1;
 const int METROPLIS_MUTATIONS = 100;
 const int BOUNCES = 6;
 
-const bool METROPLIS_MODE = false;
+const bool METROPLIS_MODE = true;
 
 const int LAYOUT_SIZE_X = 8;
 const int LAYOUT_SIZE_Y = 8;
@@ -78,7 +78,6 @@ RayScene::RayScene(Window& win) :
     ASSModel dragon("models/Chess_Set_Joined1.obj");
     std::vector<Triangle> dragonTris = dragon.ToTriangles(material, 1.0f, glm::vec3(0, 0, 0));
     sceneBVH.AddModel(dragonTris, material);
-    
 }
 
 void updateFPS() {

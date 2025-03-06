@@ -162,5 +162,14 @@
     <None Include="accumulation.comp">
       <Filter>Resource Files</Filter>
     </None>
+    <None Include="shaders\buffers.comp">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="shaders\default.frag">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="shaders\compute.comp">
+      <Filter>Resource Files</Filter>
+    </None>
   </ItemGroup>
 </Project>
