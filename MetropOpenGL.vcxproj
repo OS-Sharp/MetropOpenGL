@@ -146,41 +146,24 @@
     <None Include="accumulation.comp">
       <FileType>Document</FileType>
     </None>
-    <ClCompile Include="ASSIMP.cpp" />
-    <ClCompile Include="Camera.cpp" />
-    <ClCompile Include="ComputeStructures.cpp" />
-    <ClCompile Include="EBO.cpp" />
-    <ClCompile Include="glad.c" />
-    <ClCompile Include="Main.cpp" />
-    <ClCompile Include="Mesh.cpp" />
-    <ClCompile Include="Model.cpp" />
-    <ClCompile Include="RayScene.cpp" />
-    <ClCompile Include="Shader.cpp" />
-    <ClCompile Include="Text.cpp" />
-    <ClCompile Include="Window.cpp" />
-    <ClCompile Include="Texture.cpp" />
-    <ClCompile Include="stb.cpp" />
-    <ClCompile Include="VAO.cpp" />
-    <ClCompile Include="VBO.cpp" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="Camera.h" />
-    <ClInclude Include="ComputeStructures.h" />
-    <ClInclude Include="EBO.h" />
     <ClInclude Include="default.frag" />
-    <ClInclude Include="BVHStructures.h" />
-    <ClInclude Include="Libraries\include\json\json.h" />
-    <ClInclude Include="Mesh.h" />
-    <ClInclude Include="Model.h" />
-    <ClInclude Include="RayScene.h" />
-    <ClInclude Include="Scene.h" />
-    <ClInclude Include="Text.h" />
-    <ClInclude Include="Vertex.h" />
-    <ClInclude Include="Window.h" />
-    <ClInclude Include="Shader.h" />
-    <ClInclude Include="Texture.h" />
-    <ClInclude Include="VAO.h" />
-    <ClInclude Include="VBO.h" />
+    <ClInclude Include="src\Core\Camera.h" />
+    <ClInclude Include="src\Core\EBO.h" />
+    <ClInclude Include="src\Core\Mesh.h" />
+    <ClInclude Include="src\Core\Model.h" />
+    <ClInclude Include="src\Core\Shader.h" />
+    <ClInclude Include="src\Core\Text.h" />
+    <ClInclude Include="src\Core\Texture.h" />
+    <ClInclude Include="src\Core\VAO.h" />
+    <ClInclude Include="src\Core\VBO.h" />
+    <ClInclude Include="src\Core\Vertex.h" />
+    <ClInclude Include="src\Metro\BVHStructures.h" />
+    <ClInclude Include="src\Metro\ComputeStructures.h" />
+    <ClInclude Include="src\Metro\RayScene.h" />
+    <ClInclude Include="src\Metro\Scene.h" />
+    <ClInclude Include="src\Window.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="compute.comp" />
@@ -193,6 +176,25 @@
   </ItemGroup>
   <ItemGroup>
     <Image Include="cat.jpg" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\Core\Camera.cpp" />
+    <ClCompile Include="src\Core\EBO.cpp" />
+    <ClCompile Include="src\Core\Mesh.cpp" />
+    <ClCompile Include="src\Core\Model.cpp" />
+    <ClCompile Include="src\Core\Shader.cpp" />
+    <ClCompile Include="src\Core\Text.cpp" />
+    <ClCompile Include="src\Core\Texture.cpp" />
+    <ClCompile Include="src\Core\VAO.cpp" />
+    <ClCompile Include="src\Core\VBO.cpp" />
+    <ClCompile Include="src\Lib\ASSIMP.cpp" />
+    <ClCompile Include="src\Lib\glad.c" />
+    <ClCompile Include="src\Lib\stb.cpp" />
+    <ClCompile Include="src\Main.cpp" />
+    <ClCompile Include="src\Metro\ComputeStructures.cpp" />
+    <ClCompile Include="src\Metro\RayScene.cpp" />
+    <ClCompile Include="src\Scene.cpp" />
+    <ClCompile Include="src\Window.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

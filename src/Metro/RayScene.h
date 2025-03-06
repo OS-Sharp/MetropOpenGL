@@ -1,13 +1,13 @@
 #pragma once
-#include"Scene.h";
-#include "EBO.h"
-#include "VAO.h"
-#include "Camera.h"
-#include "Texture.h"
-#include "Shader.h"
-#include "Model.h"
-#include "ASSIMP.cpp"
-#include "Text.h"
+#include"../Scene.h";
+#include "../Core/EBO.h"
+#include "../Core/VAO.h"
+#include "../Core/Camera.h"
+#include "../Core/Texture.h"
+#include "../Core/Shader.h"
+#include "../Core/Model.h"
+#include "../Lib/ASSIMP.cpp"
+#include "../Core/Text.h"
 
 class RayScene : public Scene {
 public:

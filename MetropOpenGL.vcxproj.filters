@@ -39,106 +39,53 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="Main.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="EBO.cpp">
-      <Filter>Source Files\GraphicObjects</Filter>
-    </ClCompile>
-    <ClCompile Include="Shader.cpp">
-      <Filter>Source Files\GraphicObjects</Filter>
-    </ClCompile>
-    <ClCompile Include="Texture.cpp">
-      <Filter>Source Files\GraphicObjects</Filter>
-    </ClCompile>
-    <ClCompile Include="VAO.cpp">
-      <Filter>Source Files\GraphicObjects</Filter>
-    </ClCompile>
-    <ClCompile Include="VBO.cpp">
-      <Filter>Source Files\GraphicObjects</Filter>
-    </ClCompile>
-    <ClCompile Include="stb.cpp">
-      <Filter>Source Files\Libraries</Filter>
-    </ClCompile>
-    <ClCompile Include="glad.c">
-      <Filter>Source Files\Libraries</Filter>
-    </ClCompile>
-    <ClCompile Include="Window.cpp">
-      <Filter>Source Files\Utility</Filter>
-    </ClCompile>
-    <ClCompile Include="ComputeStructures.cpp">
-      <Filter>Source Files\Utility</Filter>
-    </ClCompile>
-    <ClCompile Include="Camera.cpp">
-      <Filter>Source Files\GraphicObjects</Filter>
-    </ClCompile>
-    <ClCompile Include="RayScene.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="Mesh.cpp">
-      <Filter>Source Files\GraphicObjects</Filter>
-    </ClCompile>
-    <ClCompile Include="Model.cpp">
-      <Filter>Source Files\GraphicObjects</Filter>
-    </ClCompile>
-    <ClCompile Include="ASSIMP.cpp">
-      <Filter>Source Files\GraphicObjects</Filter>
-    </ClCompile>
-    <ClCompile Include="Text.cpp">
-      <Filter>Source Files\Utility</Filter>
-    </ClCompile>
-  </ItemGroup>
-  <ItemGroup>
     <ClInclude Include="default.frag">
       <Filter>Resource Files</Filter>
     </ClInclude>
-    <ClInclude Include="ComputeStructures.h">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="src\Core\Vertex.h">
+      <Filter>Source Files\GraphicObjects</Filter>
     </ClInclude>
-    <ClInclude Include="EBO.h">
+    <ClInclude Include="src\Core\Camera.h">
       <Filter>Header Files\Core\Graphics</Filter>
     </ClInclude>
-    <ClInclude Include="Vertex.h">
+    <ClInclude Include="src\Core\EBO.h">
       <Filter>Header Files\Core\Graphics</Filter>
     </ClInclude>
-    <ClInclude Include="VAO.h">
+    <ClInclude Include="src\Core\Mesh.h">
       <Filter>Header Files\Core\Graphics</Filter>
     </ClInclude>
-    <ClInclude Include="VBO.h">
+    <ClInclude Include="src\Core\Model.h">
       <Filter>Header Files\Core\Graphics</Filter>
     </ClInclude>
-    <ClInclude Include="Model.h">
+    <ClInclude Include="src\Core\Texture.h">
       <Filter>Header Files\Core\Graphics</Filter>
     </ClInclude>
-    <ClInclude Include="Texture.h">
+    <ClInclude Include="src\Core\VAO.h">
       <Filter>Header Files\Core\Graphics</Filter>
     </ClInclude>
-    <ClInclude Include="Mesh.h">
+    <ClInclude Include="src\Core\VBO.h">
       <Filter>Header Files\Core\Graphics</Filter>
     </ClInclude>
-    <ClInclude Include="Shader.h">
-      <Filter>Header Files\Core\IO</Filter>
-    </ClInclude>
-    <ClInclude Include="Text.h">
-      <Filter>Header Files\Core\IO</Filter>
-    </ClInclude>
-    <ClInclude Include="Camera.h">
-      <Filter>Header Files\Core\View</Filter>
-    </ClInclude>
-    <ClInclude Include="Window.h">
-      <Filter>Header Files\Core\View</Filter>
-    </ClInclude>
-    <ClInclude Include="RayScene.h">
+    <ClInclude Include="src\Metro\RayScene.h">
       <Filter>Header Files\Core\View\Scenes</Filter>
     </ClInclude>
-    <ClInclude Include="Scene.h">
+    <ClInclude Include="src\Metro\Scene.h">
       <Filter>Header Files\Core\View\Scenes</Filter>
     </ClInclude>
-    <ClInclude Include="Libraries\include\json\json.h">
+    <ClInclude Include="src\Metro\BVHStructures.h">
+      <Filter>Header Files\Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Metro\ComputeStructures.h">
+      <Filter>Header Files\Core</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Core\Text.h">
       <Filter>Header Files\Core\IO</Filter>
     </ClInclude>
-    <ClInclude Include="BVHStructures.h">
-      <Filter>Header Files</Filter>
+    <ClInclude Include="src\Core\Shader.h">
+      <Filter>Header Files\Core\IO</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Window.h">
+      <Filter>Header Files\Core\View</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -171,5 +118,58 @@
     <None Include="shaders\compute.comp">
       <Filter>Resource Files</Filter>
     </None>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\Main.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Window.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Core\Camera.cpp">
+      <Filter>Source Files\GraphicObjects</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Core\EBO.cpp">
+      <Filter>Source Files\GraphicObjects</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Core\Mesh.cpp">
+      <Filter>Source Files\GraphicObjects</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Core\Model.cpp">
+      <Filter>Source Files\GraphicObjects</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Core\Shader.cpp">
+      <Filter>Source Files\GraphicObjects</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Core\Text.cpp">
+      <Filter>Source Files\GraphicObjects</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Core\Texture.cpp">
+      <Filter>Source Files\GraphicObjects</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Core\VAO.cpp">
+      <Filter>Source Files\GraphicObjects</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Core\VBO.cpp">
+      <Filter>Source Files\GraphicObjects</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Lib\ASSIMP.cpp">
+      <Filter>Source Files\Libraries</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Lib\stb.cpp">
+      <Filter>Source Files\Libraries</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Metro\ComputeStructures.cpp">
+      <Filter>Source Files\Utility</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Metro\RayScene.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Lib\glad.c">
+      <Filter>Source Files\Libraries</Filter>
+    </ClCompile>
+    <ClCompile Include="src\Scene.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
 </Project>

@@ -12,8 +12,8 @@
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 #include<stb/stb_image.h>
-#include "ComputeStructures.h"
-#include "BVHStructures.h"
+#include "../Metro/ComputeStructures.h"
+#include "../Metro/BVHStructures.h"
 
 class ASSModel
 {

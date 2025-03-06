@@ -808,7 +808,7 @@ void main() {
             }
 
             // Compute pixel coordinates from the updated ray direction.
-                vec2 uv = vec2((currentUV.x + 1.0) * 0.5, (currentUV.y + 1.0) * 0.5);
+                vec2 uv = rayToUV(ray.direction, forward, fovTan, aspectRatio);
                 int x = int(uv.x * float(dims.x));
                 int y = int(uv.y * float(dims.y));
                 ivec2 candidatePixel = ivec2(x, y);

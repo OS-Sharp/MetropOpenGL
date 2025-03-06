@@ -5,15 +5,15 @@
 #include<glm/glm.hpp>
 #include<glm/gtc/matrix_transform.hpp>
 
-#include"VAO.h"
-#include"VBO.h"
-#include"EBO.h"
-#include"Shader.h"
-#include"Texture.h"
+#include"Core/VAO.h"
+#include"Core/VBO.h"
+#include"Core/EBO.h"
+#include"Core/Shader.h"
+#include"Core/Texture.h"
 #include"Window.h"
-#include"ComputeStructures.h"
-#include"Camera.h"
-#include "RayScene.h"
+#include"Metro/ComputeStructures.h"
+#include"Core/Camera.h"
+#include "Metro/RayScene.h"
 
 
 

@@ -1,7 +1,7 @@
 #include "RayScene.h"
 #include "ComputeStructures.h"
 #include <chrono>
-#include "Text.h"
+#include "../Core/Text.h"
 
 // Global variables
 int frameCount = 0;
