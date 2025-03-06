@@ -15,7 +15,7 @@ const int DEBUGTEST = 0;
 const int DEBUGTHRESHOLD = 30;
 const int RAYSPERPIXEL = 1;
 const int METROPLIS_MUTATIONS = 100;
-const int BOUNCES = 3;
+const int BOUNCES = 6;
 
 const bool METROPLIS_MODE = false;
 
@@ -30,15 +30,15 @@ static auto startTime = std::chrono::steady_clock::now();
 RayScene::RayScene(Window& win) :
     SCREEN_WIDTH(win.width),
     SCREEN_HEIGHT(win.height),
-    shader("default.vert", "default.frag"),
-    computeShader("compute.comp"),
-    copyAccumShader("accumulation.comp"),
+    shader("shaders/default.vert", "shaders/default.frag"),
+    computeShader("shaders/compute.comp"),
+    copyAccumShader("shaders/accumulation.comp"),
     tex(SCREEN_WIDTH, SCREEN_HEIGHT, 0, 0, GL_READ_WRITE),
     oldTex(SCREEN_WIDTH, SCREEN_HEIGHT, 1, 1),
     averageTex(SCREEN_WIDTH, SCREEN_HEIGHT, 2, 2, GL_READ_WRITE, GL_R32UI),
     camera(SCREEN_WIDTH, SCREEN_HEIGHT, glm::vec3(0.0f, 0.0f, -5.0f)),
     model("models/BOTTLE MID POLY.obj"),
-    textShader("text_vertex.vert", "text_fragment.frag"),
+    textShader("shaders/text_vertex.vert", "shaders/text_fragment.frag"),
     text(SCREEN_WIDTH, SCREEN_HEIGHT, "fonts/Raleway-Black.ttf")
 {
     /*
