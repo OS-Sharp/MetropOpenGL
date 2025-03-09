@@ -131,7 +131,7 @@ public:
     }
 
 private:
-    const int MaxDepth = 32;
+    const int MaxDepth = 16;
 
     // Helper: Compute the surface area of a bounding box.
     float SurfaceArea(const BoundingBox& box) const {

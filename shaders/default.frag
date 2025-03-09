@@ -15,16 +15,18 @@ vec3 ACESFilm(vec3 x);
 
 void main() {
 
-    vec4 color = texture(tex0, texCoord);
+    vec4 color0 = texture(tex0, texCoord);
+    vec4 color1 = texture(tex1, texCoord);
+    vec4 color2 = texture(tex2, texCoord);
     //color += texture(tex1, texCoord);
 
-    float c = color.a / 1.0f;
+    float c = color0.a / 100.0f;
 
-    vec3 gamma = ACESFilm(color.rgb);
+    vec3 gamma = ACESFilm(color0.rgb);
     gamma = LinearToInverseGamma(gamma.rgb, 2.4);
 
-    //FragColor = vec4(currentColor.rgb,1);
-    FragColor = vec4(color.rgb,1);
+    //FragColor = vec4(c,c,c,1);
+    FragColor = vec4(color0.rgb,1);
 }
 
 

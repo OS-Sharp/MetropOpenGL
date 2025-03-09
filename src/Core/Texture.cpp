@@ -92,9 +92,10 @@ Texture::Texture(GLuint width, GLuint height, GLuint slot, GLuint binding, GLenu
 
 	glGenTextures(1, &ID);
 	glActiveTexture(GL_TEXTURE0 + unit);
+
 	glBindTexture(GL_TEXTURE_2D, ID);
 
-	glTexParameteri(ID, GL_TEXTURE_MIN_FILTER, GL_NEAREST_MIPMAP_LINEAR);
+	glTexParameteri(ID, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
 	glTexParameteri(ID, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
 	glTexParameteri(ID, GL_TEXTURE_WRAP_S, GL_REPEAT);
@@ -102,16 +103,26 @@ Texture::Texture(GLuint width, GLuint height, GLuint slot, GLuint binding, GLenu
 
 	glTextureStorage2D(ID, 1, GL_RGBA32F, width, height);
 	glBindImageTexture(binding, ID, 0, GL_FALSE, 0, access, format);
+
+	glActiveTexture(GL_TEXTURE0 + 15);
 }
 
 void Texture::texUnit(Shader& shader, const char* uniform, GLuint unit)
 {
 	// Gets the location of the uniform
 	GLuint texUni = glGetUniformLocation(shader.ID, uniform);
+	// Check if the uniform exists
+	if (texUni == -1) {
+		// Uniform not found: you can log a warning or handle it accordingly.
+		// std::cerr << "Warning: Uniform \"" << uniform << "\" not found in shader " << shader.ID << std::endl;
+		return;
+	}
 	// Shader needs to be activated before changing the value of a uniform
 	shader.Activate();
 	// Sets the value of the uniform
 	glUniform1i(texUni, unit);
+
+	glActiveTexture(GL_TEXTURE0 + 2);
 }
 
 void Texture::Bind()

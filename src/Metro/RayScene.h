@@ -11,8 +11,8 @@
 
 class RayScene : public Scene {
 public:
-    unsigned int SCREEN_WIDTH = 1024;
-    unsigned int SCREEN_HEIGHT = 1024;
+    unsigned int SCREEN_WIDTH = 1400;
+    unsigned int SCREEN_HEIGHT = 800;
 
     Shader computeShader;
     Shader shader;
@@ -20,8 +20,11 @@ public:
     Shader textShader;
 
     Texture tex;
+    Texture biasTex;
     Texture oldTex;
-    Texture averageTex;
+
+    Texture metroplisDirectionsTex;
+    Texture metroplisColorsTex;
 
     Camera camera;
     ASSModel model;

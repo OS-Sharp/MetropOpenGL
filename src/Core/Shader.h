@@ -26,11 +26,15 @@ public:
 
 	void Delete();
 	template <class T>
-	GLuint StoreSSBO(std::vector<T> data, int binding);
+	GLuint StoreSSBO(std::vector<T> data, int binding, bool toBeDeleted = true);
 	template <class T>
-	GLuint StoreSSBO(T data, int binding);
+	GLuint StoreSSBO(T data, int binding, bool toBeDeleted = true);
 	template <class T>
 	GLuint StoreSSBOWithLength(std::vector<T> data, int binding);
+	template <class T>
+	GLuint UpdateSSBO(std::vector<T> data, int binding);
+	template <class T>
+	GLuint UpdateSSBO(T data, int binding);
 
 	void SetParameterInt(int data, const char* uniform);
 	void SetParameterFloat(float data, const char* uniform);
@@ -40,7 +44,7 @@ public:
 };
 
 template <class T>
-GLuint Shader::StoreSSBO(std::vector<T> data, int binding) {
+GLuint Shader::StoreSSBO(std::vector<T> data, int binding, bool toBeDeleted) {
 	GLuint ssbo;
 
 	// Generate and bind the SSBO
@@ -50,12 +54,54 @@ GLuint Shader::StoreSSBO(std::vector<T> data, int binding) {
 	// Allocate and initialize the buffer data
 	glBufferData(GL_SHADER_STORAGE_BUFFER, data.size() * sizeof(T), data.data(), GL_DYNAMIC_COPY);
 
+	// Bind the SSBO to the binding point 0, as per the compute shader 
+	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, binding, ssbo);
+
+	if (toBeDeleted) SSBOBuffers.push_back(ssbo);
+
+	return ssbo;
+}
+
+template <class T>
+GLuint Shader::StoreSSBO(T data, int binding, bool toBeDeleted) {
+	GLuint ssbo;
+
+	// Generate and bind the SSBO
+	glGenBuffers(1, &ssbo);
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+
+	// Allocate and initialize the buffer data
+	glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(T), &data, GL_DYNAMIC_COPY);
+
 	// Bind the SSBO to the binding point 0, as per the compute shader
 	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, binding, ssbo);
 
-	SSBOBuffers.push_back(ssbo);
+	if(toBeDeleted) SSBOBuffers.push_back(ssbo);
 
 	return ssbo;
+}
+
+template <class T>
+GLuint Shader::UpdateSSBO(std::vector<T> data, int binding) {
+
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, binding);
+	glBufferData(GL_SHADER_STORAGE_BUFFER, data.size() * sizeof(T), data.data(), GL_DYNAMIC_COPY);
+
+	SSBOBuffers.push_back(binding);
+
+	return binding;
+}
+
+template <class T>
+GLuint Shader::UpdateSSBO(T data, int binding) {
+
+	glBindBuffer(GL_SHADER_STORAGE_BUFFER, binding);
+	glBufferData(GL_SHADER_STORAGE_BUFFER,  sizeof(T), &data, GL_DYNAMIC_COPY);
+
+	SSBOBuffers.push_back(binding);
+
+	return binding;
 }
 
 template <class T>
@@ -75,24 +121,6 @@ GLuint Shader::StoreSSBOWithLength(std::vector<T> data, int binding) {
 	// Allocate and initialize the buffer data
 	glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(GLuint), &length);
 	glBufferSubData(GL_SHADER_STORAGE_BUFFER, sizeof(GLuint), data.size() * sizeof(T), data.data() );
-
-	// Bind the SSBO to the binding point 0, as per the compute shader
-	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, binding, ssbo);
-	SSBOBuffers.push_back(ssbo);
-
-	return ssbo;
-}
-
-template <class T>
-GLuint Shader::StoreSSBO(T data, int binding) {
-	GLuint ssbo;
-
-	// Generate and bind the SSBO
-	glGenBuffers(1, &ssbo);
-	glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
-
-	// Allocate and initialize the buffer data
-	glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(T), &data, GL_DYNAMIC_COPY);
 
 	// Bind the SSBO to the binding point 0, as per the compute shader
 	glBindBufferBase(GL_SHADER_STORAGE_BUFFER, binding, ssbo);
