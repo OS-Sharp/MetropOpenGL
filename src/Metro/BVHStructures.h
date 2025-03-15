@@ -84,7 +84,7 @@ public:
         for (auto& nodePtr : Nodes) {
             if (nodePtr) {
                 flatNodes.push_back(std::move(*nodePtr));  // Move the BVHNode
-                nodePtr.reset();  // Optional: free the memory explicitly
+                //nodePtr.reset();  // Optional: free the memory explicitly
             }
         }
 
@@ -109,7 +109,7 @@ public:
         for (size_t i = 0; i < triangles.size(); i++) {
             Triangles.push_back(triangles[i]);
 
-            Root->Bounds.GrowToInclude(Triangles[i + triOffset]);
+            Root->Bounds.GrowToInclude(triangles[i]);
         }
         Root->TriangleCount = static_cast<int>(triangles.size());
 
@@ -190,7 +190,7 @@ private:
 
     // Modified Split function: tests all three axes.
     void Split(BVHNode* parent, int depth = 0) {
-        if (depth >= MaxDepth || parent->TriangleCount <= 1)
+        if (depth >= MaxDepth || parent->TriangleCount <= 2)
             return;
 
         float parentSA = SurfaceArea(parent->Bounds);

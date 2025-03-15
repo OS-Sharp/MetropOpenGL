@@ -69,9 +69,6 @@
     <ClInclude Include="src\Metro\RayScene.h">
       <Filter>Header Files\Core\View\Scenes</Filter>
     </ClInclude>
-    <ClInclude Include="src\Metro\Scene.h">
-      <Filter>Header Files\Core\View\Scenes</Filter>
-    </ClInclude>
     <ClInclude Include="src\Metro\BVHStructures.h">
       <Filter>Header Files\Core</Filter>
     </ClInclude>
@@ -86,6 +83,9 @@
     </ClInclude>
     <ClInclude Include="src\Window.h">
       <Filter>Header Files\Core\View</Filter>
+    </ClInclude>
+    <ClInclude Include="src\Scene.h">
+      <Filter>Header Files\Core\View\Scenes</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -116,6 +116,9 @@
       <Filter>Resource Files</Filter>
     </None>
     <None Include="shaders\compute.comp">
+      <Filter>Resource Files</Filter>
+    </None>
+    <None Include="shaders\default.vert">
       <Filter>Resource Files</Filter>
     </None>
   </ItemGroup>

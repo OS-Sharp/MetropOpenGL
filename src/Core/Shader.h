@@ -40,6 +40,8 @@ public:
 	void SetParameterFloat(float data, const char* uniform);
 	void SetParameterDouble(double data, const char* uniform);
 	void SetParameterColor(glm::vec3 data, const char* uniform);
+	void SetParameterSampler(const char* uniform, int textureUnit);
+
 	void DeleteSSBOs();
 };
 

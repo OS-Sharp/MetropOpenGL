@@ -87,6 +87,7 @@
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>$(SolutionDir)Libraries\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp20</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -118,6 +119,7 @@
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <AdditionalIncludeDirectories>$(SolutionDir)Libraries\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <LanguageStandard>stdcpp20</LanguageStandard>
     </ClCompile>
     <Link>
       <SubSystem>Console</SubSystem>
@@ -162,7 +164,7 @@
     <ClInclude Include="src\Metro\BVHStructures.h" />
     <ClInclude Include="src\Metro\ComputeStructures.h" />
     <ClInclude Include="src\Metro\RayScene.h" />
-    <ClInclude Include="src\Metro\Scene.h" />
+    <ClInclude Include="src\Scene.h" />
     <ClInclude Include="src\Window.h" />
   </ItemGroup>
   <ItemGroup>
@@ -171,6 +173,7 @@
     <None Include="shaders\buffers.comp" />
     <None Include="shaders\compute.comp" />
     <None Include="shaders\default.frag" />
+    <None Include="shaders\default.vert" />
     <None Include="text_fragment.frag" />
     <None Include="text_vertex.vert" />
   </ItemGroup>

@@ -26,7 +26,7 @@ void main() {
     gamma = LinearToInverseGamma(gamma.rgb, 2.4);
 
     //FragColor = vec4(c,c,c,1);
-    FragColor = vec4(color0.rgb,1);
+    FragColor = vec4(gamma.rgb,1);
 }
 
 

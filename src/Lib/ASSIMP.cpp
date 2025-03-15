@@ -14,10 +14,26 @@
 #include<stb/stb_image.h>
 #include "../Metro/ComputeStructures.h"
 #include "../Metro/BVHStructures.h"
+#include <filesystem>
+#include "../Core/Shader.h"
+#include <assimp/material.h> // For AI_MATKEY_GLTF_* macros
+#include <assimp/Importer.hpp>
+#include <assimp/scene.h>
+#include <assimp/postprocess.h>
+#include <assimp/GltfMaterial.h>
+#include <assimp/pbrmaterial.h>
+
+#define AI_MATKEY_GLTF_BASE_COLOR_FACTOR "$mat.gltf.baseColorFactor", 0, 0
+#define AI_MATKEY_GLTF_METALLIC_FACTOR "$mat.gltf.metallicFactor", 0, 0
+#define AI_MATKEY_GLTF_ROUGHNESS_FACTOR "$mat.gltf.roughnessFactor", 0, 0
+
 
 class ASSModel
 {
+
 private:
+	std::string modelPath;
+
 	Assimp::Importer importer; // https://assimp-docs.readthedocs.io/en/v5.1.0/ ... (An older Assimp website: http://assimp.sourceforge.net/lib_html/index.html)
 	const aiScene* scene = nullptr;
 	aiNode* root_node = nullptr; // Only being used in the: load_model_cout_console() function.
@@ -40,13 +56,22 @@ private:
 	};
 
 public:
+	inline std::string GetRelativeTexturePath(const std::string& modelPath, const std::string& texturePath)
+	{
+		std::filesystem::path modelDir = std::filesystem::path(modelPath).parent_path();
+		std::filesystem::path fullTexturePath = modelDir / texturePath;
+		return fullTexturePath.string();
+	}
+
 	unsigned int num_meshes;
 	std::vector<Mesh> mesh_list;
 	std::vector<Texture> texture_list;
+	const GLuint MODEL_ACTIVE_TEXTURE_OFFSET = 6;
 
 	ASSModel(const char* model_path) // Constructor
 	{
 		// http://assimp.sourceforge.net/lib_html/postprocess_8h.html (See: aiPostProcessSteps) (Flag options)
+		modelPath = std::string(model_path);
 
 			// scene = importer.ReadFile(model_path, aiProcess_JoinIdenticalVertices | aiProcess_Triangulate | aiProcess_FlipUVs | aiProcess_CalcTangentSpace);
 		scene = importer.ReadFile(model_path, aiProcess_JoinIdenticalVertices | aiProcess_Triangulate | aiProcess_FlipUVs);
@@ -58,9 +83,99 @@ public:
 		// load_model_cout_console();
 	}
 
-	std::vector<Triangle> ToTriangles(Material material, float scale, glm::vec3 position) {
+
+	void ExtractPBRProperties(const aiMaterial* material, Material& outMat) {
+		// Base Color Factor (RGBA)
+		aiColor4D baseColor;
+		if (aiReturn_SUCCESS == material->Get(AI_MATKEY_COLOR_DIFFUSE, baseColor)) {
+			// Store only the RGB components (or use alpha for opacity)
+			outMat.diffuseColor = glm::vec3(baseColor.r, baseColor.g, baseColor.b);
+			// You might also want to store alpha into your opacity field:
+			outMat.opacity = glm::vec3(baseColor.a);
+		}
+
+
+		// Metallic Factor
+		float metallic = 1.0f;
+		if (aiReturn_SUCCESS == material->Get(AI_MATKEY_REFLECTIVITY, metallic)) {
+			// You can decide where to store this value.
+			// For instance, you might pack it into specularProbability or a dedicated field.
+			outMat.specularChance = glm::vec3(metallic);
+		}
+
+
+		// Roughness Factor
+		float roughness = 1.0f;
+		if (AI_SUCCESS == material->Get(AI_MATKEY_ROUGHNESS_FACTOR, roughness)) {
+			// For example, you might use smoothness as the inverse of roughness:
+			outMat.smoothness = glm::vec3(1.0f - roughness);
+		}
+
+		// Extract Base Color Texture Path
+		aiString texture_file;
+		material->Get(AI_MATKEY_TEXTURE(aiTextureType_DIFFUSE, 0), texture_file);
+		if (auto texture = scene->GetEmbeddedTexture(texture_file.C_Str())) {
+			//returned pointer is not null, read texture from memory
+		}
+		else {
+			//regular file, check if it exists and read it
+		}
+	}
+
+	std::vector<Triangle> ToTriangles(Material material, float scale, glm::vec3 position, Shader& shader, BVH& bvh) {
 		std::vector<Triangle> allTriangles = {};
-		std::vector<MeshInfo> meshInfos = {};
+
+		std::vector<GLuint> textureIDs; // Your individual texture IDs (mesh.tex_handle values)
+
+		GLuint textureArray;
+		glGenTextures(1, &textureArray);
+		glBindTexture(GL_TEXTURE_2D_ARRAY, textureArray);
+
+		int texWidth = 2048;  // Ideally determined per texture
+		int texHeight = 2048;
+		int numLayers = texture_list.size();
+		int numChannels = 3; // Adjust if needed for RGBA
+
+		// Create storage
+		glTexStorage3D(GL_TEXTURE_2D_ARRAY, 1, GL_RGB8, texWidth, texHeight, texture_list.size());
+
+		glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+		glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
+		glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
+
+		// Load each texture image to the texture array
+		for (int i = 0; i < texture_list.size(); i++)
+		{
+			int width, height, num_channels;
+			unsigned char* pixels = stbi_load(texture_list[i].image_name.c_str(), &width, &height, &num_channels, 0);
+
+			if (pixels)
+			{
+				GLenum format = GL_RGB;
+				if (num_channels == 4) format = GL_RGBA;
+				else if (num_channels == 3) format = GL_RGB;
+				else if (num_channels == 1) format = GL_RED;
+
+				glTexSubImage3D(GL_TEXTURE_2D_ARRAY,
+					0,
+					0, 0, i, // xoffset, yoffset, layer
+					width, height, 1,
+					format, GL_UNSIGNED_BYTE,
+					pixels);
+
+				stbi_image_free(pixels);
+			}
+			else
+			{
+				std::cerr << "Failed to load texture: " << texture_list[i].image_name << std::endl;
+				stbi_image_free(pixels);
+			}
+		}
+
+		// Generate MipMaps for better filtering
+		glGenerateMipmap(GL_TEXTURE_2D_ARRAY);
+		glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
 
 		for (int a = 0; a < mesh_list.size(); a++) {
 			auto mesh = mesh_list[a];
@@ -68,10 +183,13 @@ public:
 
 			std::vector<glm::vec3> positions = {};
 			std::vector<glm::vec3> normals = {};
+			std::vector<glm::vec2> uvs = {};
 
 			for (int b = 0; b < mesh.vert_indices.size(); b++) {
 				positions.push_back(mesh.vert_positions[mesh.vert_indices[b]] * scale + position);
 				normals.push_back(mesh.vert_normals[mesh.vert_indices[b]]);
+				uvs.push_back(mesh.tex_coords[mesh.vert_indices[b]]);
+
 				if ((b + 1) % 3 == 0) {
 					Triangle triangle;
 
@@ -83,19 +201,37 @@ public:
 					triangle.NormP2 = normals[1];
 					triangle.NormP3 = normals[2];
 
+
+					triangle.UVP1 = uvs[0];
+					triangle.UVP2 = uvs[1];
+					triangle.UVP3 = uvs[2];
+
 					meshTriangles.push_back(triangle);
 
 					positions.clear();
 					normals.clear();
+					uvs.clear();
 				}
 			}
 
-			MeshInfo meshInfo = MeshInfo::createMeshFromTris(allTriangles.size(), meshTriangles);
-			meshInfo.material = material;
+			Material meshMat = material;
+			aiMaterial* aiMat = scene->mMaterials[scene->mMeshes[a]->mMaterialIndex];
+			ExtractPBRProperties(aiMat, meshMat);
 
-			meshInfos.push_back(meshInfo);
 			allTriangles.insert(allTriangles.end(), meshTriangles.begin(), meshTriangles.end());
+
+			if (mesh.tex_handle != 0)
+			{
+				meshMat.textureSlot = a;
+			}
+
+			bvh.AddModel(meshTriangles, meshMat);
 		}
+
+		glActiveTexture(GL_TEXTURE0 + MODEL_ACTIVE_TEXTURE_OFFSET);
+		glBindTexture(GL_TEXTURE_2D_ARRAY, textureArray);
+		shader.Activate();
+		shader.SetParameterSampler("diffuseTextures", MODEL_ACTIVE_TEXTURE_OFFSET);
 
 		return allTriangles;
 	}
@@ -110,10 +246,13 @@ public:
 
 			std::vector<glm::vec3> positions = {};
 			std::vector<glm::vec3> normals = {};
+			std::vector<glm::vec2> uvs = {};
 
 			for (int b = 0; b < mesh.vert_indices.size(); b++) {
 				positions.push_back(mesh.vert_positions[mesh.vert_indices[b]] * scale + position);
 				normals.push_back(mesh.vert_normals[mesh.vert_indices[b]]);
+				uvs.push_back(mesh.tex_coords[mesh.vert_indices[b]]);
+
 				if ((b + 1) % 3 == 0) {
 					Triangle triangle;
 
@@ -124,6 +263,10 @@ public:
 					triangle.NormP1 = normals[0];
 					triangle.NormP2 = normals[1];
 					triangle.NormP3 = normals[2];
+
+					triangle.UVP1 = uvs[0];
+					triangle.UVP2 = uvs[1];
+					triangle.UVP3 = uvs[2];
 
 					meshTriangles.push_back(triangle);
 
@@ -473,10 +616,17 @@ private:
 
 	unsigned int load_texture_image(std::string file_name, bool& load_complete)
 	{
-		// stbi_set_flip_vertically_on_load(1); // Call this function if the image is upside-down.		
+		std::filesystem::path modelDir = std::filesystem::path(modelPath).parent_path();
+		std::filesystem::path texturePath(file_name);
 
-		std::size_t position = file_name.find_last_of("\\");
-		file_name = "Images\\" + file_name.substr(position + 1);
+		// Check if texturePath is absolute.
+		if (texturePath.is_absolute()) {
+			// Remove the root (e.g., "E:\") to make it relative.
+			texturePath = texturePath.lexically_relative(texturePath.root_path());
+		}
+
+		std::filesystem::path fullTexturePath = modelDir / texturePath;
+		file_name = fullTexturePath.string();
 
 		int width, height, num_components;
 		unsigned char* image_data = stbi_load(file_name.c_str(), &width, &height, &num_components, 0);

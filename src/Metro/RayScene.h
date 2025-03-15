@@ -27,7 +27,6 @@ public:
     Texture metroplisColorsTex;
 
     Camera camera;
-    ASSModel model;
 
     VAO SceneVAO;
     std::unique_ptr<VBO> SceneVBO;

@@ -80,7 +80,8 @@ void Shader::Delete() {
 
 void Shader::SetParameterInt(int data, const char* uniform)
 {
-	glUniform1i(glGetUniformLocation(ID, uniform), data);
+	GLuint loc = glGetUniformLocation(ID, uniform);
+	glUniform1i(loc, data);
 }
 
 void Shader::SetParameterFloat(float data, const char* uniform)
@@ -98,6 +99,13 @@ void Shader::SetParameterDouble(double data, const char* uniform)
 {
 	glUniform1d(glGetUniformLocation(ID, uniform), data);
 }
+
+void Shader::SetParameterSampler(const char* uniform, int textureUnit)
+{
+	GLuint loc = glGetUniformLocation(ID, uniform);
+	glUniform1i(loc, textureUnit);
+}
+
 
 void Shader::Activate(bool compute, GLuint gX, GLuint gY, GLuint gZ) {
 	if(!compute) glUseProgram(ID);

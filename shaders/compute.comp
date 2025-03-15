@@ -2,20 +2,31 @@
 #extension GL_EXT_shader_image_load_store : enable
 #define M_PI 3.14159265358979323846
 
-///////////////////////////////////////////////////////////////////////////////
-//                    METROPOLIS LIGHT TRANSPORT COMPUTE SHADER              //
-//                                                                           //
-// This shader implements a Metropolis Light Transport (MLT) algorithm for   //
-// path-traced image synthesis. It uses compute shaders with image load/store //
-// and atomic operations to progressively accumulate samples across frames.  //
-//                                                                           //
-// Key features:                                                             //
-//   - Multiple ray bounces per sample                                      //
-//   - Metropolis mutation loop with lens perturbation                        //
-//   - Weighted per-pixel averaging with atomic counters                     //
-//   - BVH traversal for scene geometry                                      //
-//   - Supports debugging and tone mapping                                  //
-///////////////////////////////////////////////////////////////////////////////
+#define RENDER_MODE_0 //PATH TRACING
+//#define RENDER_MODE_1 //METROPLIS
+//#define RENDER_MODE_2 //BIDIRECTIONAL
+
+
+/******************************************************************************
+╔════════════════════════════════════════════════════════════════════════════╗
+║                 METROPOLIS LIGHT TRANSPORT COMPUTE SHADER                  ║
+║                                                                            ║
+║ This shader implements a Metropolis Light Transport (MLT) algorithm for    ║
+║ path-traced image synthesis. It leverages compute shaders with image       ║
+║ load/store and atomic operations to progressively accumulate samples       ║
+║ across frames.                                                             ║
+║                                                                            ║
+║ Key features:                                                              ║
+║   - Multiple ray bounces per sample                                        ║
+║   - Metropolis mutation loop with lens perturbation                        ║
+║   - Weighted per-pixel averaging with atomic counters                      ║
+║   - BVH traversal for scene geometry                                       ║
+║   - Supports bidirectional light transport                                 ║
+║   - Realistic material shading with albedo and translucent materials       ║
+║   - Comprehensive debugging tools and tone mapping                         ║
+╚════════════════════════════════════════════════════════════════════════════╝
+********************************************************************************/
+
 
 ///////////////////////////////
 //        STRUCTURES         //
@@ -30,6 +41,7 @@ struct Material {
     vec3 specularProbability; // Probability of specular reflection
     vec3 specularColor;       // Specular reflectance
     vec3 opacity;             // Opacity (1.0 = opaque)
+    int textureSlot;
 };
 
 // Model instance with BVH node offsets and material
@@ -57,6 +69,7 @@ struct DebugBox {
 struct Triangle {
     vec3 posA, posB, posC;
     vec3 normA, normB, normC;
+    vec2 uvA, uvB, uvC, uvD;
 };
 
 // Mesh info (bounding box, material, triangle indices)
@@ -86,6 +99,7 @@ struct Ray {
 struct HitInfo {
     vec3 hitPoint;
     vec3 normal;
+    vec3 albedo;
     bool didHit;
     float dst;
     Material material;
@@ -111,59 +125,99 @@ struct BVHNode {
 
 layout(local_size_x = LOCAL_SIZE_X, local_size_y = LOCAL_SIZE_Y, local_size_z = 1) in;
 
+//======================================================================
 // Image outputs
-layout(rgba32f, binding = 0) uniform image2D screen;       // Primary output image (float color)
-layout(rgba32f, binding = 1) uniform image2D averageScreen;   // Per-pixel sample counter
-layout(rgba32f, binding = 2) uniform image2D oldScreen;      // Previous frame image (for accumulation)
+//======================================================================
+// Binding 0: Primary output image (float color, RGBA32F). The final 
+// rendered image is written here.
+layout(rgba32f, binding = 0) uniform image2D screen;       
+
+// Binding 1: Average screen image. This buffer stores per-pixel sample 
+// counters or running averages for progressive accumulation.
+layout(rgba32f, binding = 1) uniform image2D averageScreen;   
+
+// Binding 2: Old screen image. Contains the previous frame's image data 
+// used for accumulation.
+layout(rgba32f, binding = 2) uniform image2D oldScreen;      
+
+// Binding 5: MetroSample image. Used to store the colors generated during 
+// metropolis sampling.
 layout(rgba32f, binding = 5) uniform image2D metroSample; 
+
+// Binding 6: MetroDir image. Stores the directional information (e.g. 
+// sampling directions) for metropolis mutations.
 layout(rgba32f, binding = 6) uniform image2D metroDir; 
 
+//======================================================================
 // Global scene and camera data
+//======================================================================
+// Binding 3: Buffer containing the camera data (position, direction, FOV, etc.).
 layout(std430, binding = 3) buffer CameraData {
     Camera camera;
 };
 
+// Binding 4: Buffer containing the current frame number.
 layout(std430, binding = 4) buffer Frames {
     uint Frame;
 };
 
+//======================================================================
 // Scene primitives buffers
+//======================================================================
+// Binding 7: Buffer containing sphere data (for circular objects).
 layout(std430, binding = 7) buffer CircleData {
     Sphere spheres[];
 };
 
+// Binding 8: Buffer holding the count of spheres.
 layout(std430, binding = 8) buffer CircleLength {
     uint NumSpheres;
 };
 
-
+// Binding 9: Buffer containing triangle data for mesh intersections.
 layout(std430, binding = 9) buffer TriangleData {
     Triangle Triangles[];
 };
 
+// Binding 10: Buffer mapping each triangle to its corresponding mesh index.
 layout(std430, binding = 10) buffer TriangleToMeshMap {
     int triangleToMeshMap[];
 };
 
+// Binding 11: Buffer containing BVH nodes used for accelerating ray traversal.
 layout(std430, binding = 11) buffer BVHNodes {
     BVHNode nodes[];
 };
 
+// Binding 12: Buffer holding the number of BVH nodes.
 layout(std430, binding = 12) buffer NodeLength {
     uint NumNodes;
 };
 
+// Binding 13: Buffer containing model data (mesh instances) for the scene.
 layout(std430, binding = 13) buffer _Models {
     Model Models[];
 };
 
+// Binding 14: Buffer holding the number of models.
 layout(std430, binding = 14) buffer ModelLength {
     uint NumModels;
 };
 
+//======================================================================
+// BVH Stack Buffer
+//======================================================================
+// Binding 20: Per-thread buffer used as a stack during BVH traversal.
+// This buffer holds the indices of BVH nodes as the traversal proceeds.
+layout(std430, binding = 20) buffer BVHStackBuffer {
+    int bvhStack[];
+};
+const int MAX_STACK_SIZE = 32;
+
 ///////////////////////////////
 //         UNIFORMS        //
 ///////////////////////////////
+uniform sampler2DArray diffuseTextures;
 
 uniform vec3 SkyColourHorizon;
 uniform vec3 SkyColourZenith;
@@ -173,6 +227,7 @@ uniform vec3 GroundColor;
 uniform float SunFocus;
 uniform float SunIntensity;
 uniform float SunThreshold;
+uniform float SkyStrength;
 
 uniform mat4 viewProj;
 
@@ -181,7 +236,7 @@ uniform int NumberOfRays = 5;       // Mutation iterations per pixel
 uniform int DebugMode = 0;          // Debug mode (0: normal, 1: debug view)
 uniform int DebugThreshold = 20;
 uniform int DebugTest = 0;
-uniform bool METROPLIS = false;
+uniform int RENDER_MODE = 0;
 
 uniform int MutationType = 1;       // 0 = small perturbation, 1 = lens perturbation
 uniform int NumberOfMutations = 1;       // 0 = small perturbation, 1 = lens perturbation
@@ -195,8 +250,10 @@ uniform bool BurnInPhase = true;     // Toggle burn-in phase
 
 uniform int METROPLIS_DISPATCH_X;
 uniform int METROPLIS_DISPATCH_Y;
-
 const int NUM_DEBUG_STATS = 5;
+const float pLargeStep = 0.3;
+float pLarge = 0;
+
 
 ///////////////////////////////
 //    HELPER FUNCTIONS     //
@@ -236,11 +293,7 @@ float rand(inout vec2 co) {
     co = fract(co * vec2(123.34547457, 456.21235235));
     co += dot(co, co.yx + vec2(21.124524, 71.3623525));
     co = fract(co * vec2(143.543678967, 927.4429879679));
-    return fract(sin(dot(co, vec2(127.198769, 311.798796))) * 43758.5453);
-}
-
-float randTime() {
-    return fract(sin(dot(vec2(uTime * 0.096, uTime * -0.02345), vec2(127.198769, 311.798796))) * 43758.5453);
+    return fract(sin(dot(co, vec2(127.198769, 311.798796))) * 458.5453);
 }
 
 vec3 CosineSampleHemisphere(vec3 normal, inout vec2 co)
@@ -306,15 +359,15 @@ vec2 wrapUV(vec2 uv, float aspect) {
 
 // Mutate a UV coordinate using an exponential radial distribution.
 vec2 lensPerturbation(vec2 uv, float aspect, float minPerturb, float maxPerturb, inout vec2 state) {
-    if(rand(state) < 0.3){ 
+    if(rand(state) < pLargeStep){ 
         ivec2 workGroup = ivec2(gl_WorkGroupID.xy);          // e.g., (0, 0, 0), (1, 0, 0), etc.
         ivec2 localThread = ivec2(gl_LocalInvocationID.xy);    // e.g., ranges from (0,0,0) to (7,7,0)
 
         float imageRegionSizeX = 1.0 / float(LOCAL_SIZE_X * METROPLIS_DISPATCH_X);
         float imageRegionSizeY = 1.0 / float(LOCAL_SIZE_Y * METROPLIS_DISPATCH_Y);
 
-        float imageRegionOffsetX = localThread.x  * imageRegionSizeX + workGroup.x * imageRegionSizeX * 8;
-        float imageRegionOffsetY = localThread.y  * imageRegionSizeY + workGroup.y * imageRegionSizeY * 8;
+        float imageRegionOffsetX = localThread.x  * imageRegionSizeX + workGroup.x * imageRegionSizeX * LOCAL_SIZE_X;
+        float imageRegionOffsetY = localThread.y  * imageRegionSizeY + workGroup.y * imageRegionSizeY * LOCAL_SIZE_Y;
 
         float x = rand(state) * imageRegionSizeX + imageRegionOffsetX;
         float y = rand(state) * imageRegionSizeY + imageRegionOffsetY;
@@ -325,13 +378,18 @@ vec2 lensPerturbation(vec2 uv, float aspect, float minPerturb, float maxPerturb,
         float v_random = randomSample.y * 2.0 - 1.0;
         u_random *= aspect;
 
-        return vec2(u_random, v_random);
+        pLarge = 1;
+
+        return wrapUV(vec2(u_random, v_random), aspect);
     }
     float U_random = rand(state);
     float R = maxPerturb * exp(-log(maxPerturb / minPerturb) * U_random);
     float phi = (M_PI * 2.0) * rand(state);
     vec2 offset = vec2(R * cos(phi), R * sin(phi));
     vec2 mutatedUV = uv + offset;
+
+    pLarge = 0;
+
     return wrapUV(mutatedUV, aspect);
 }
 
@@ -426,6 +484,8 @@ HitInfo RayBox(Ray ray, vec3 minBounds, vec3 maxBounds, Material material) {
 HitInfo RaySphere(Ray ray, vec3 sphereCenter, float sphereRadius, Material material) {
     HitInfo hitInfo;
     hitInfo.didHit = false;
+    hitInfo.albedo = vec3(1.0);
+
     vec3 o_c = ray.origin - sphereCenter;
     float b = dot(ray.direction, o_c);
     float c = dot(o_c, o_c) - sphereRadius * sphereRadius;
@@ -448,7 +508,8 @@ HitInfo RaySphere(Ray ray, vec3 sphereCenter, float sphereRadius, Material mater
 HitInfo RayTriangle(Ray ray, Triangle tri, Material material) {
     HitInfo hitInfo;
     hitInfo.didHit = false;
-    
+    hitInfo.albedo = vec3(1.0);
+
     // Compute the two edge vectors of the triangle.
     vec3 edge1 = tri.posB - tri.posA;
     vec3 edge2 = tri.posC - tri.posA;
@@ -498,74 +559,128 @@ HitInfo RayTriangle(Ray ray, Triangle tri, Material material) {
     
     hitInfo.normal = normal;
     hitInfo.material = material;
+    float w = 1.0 - u - v;
+
+    vec2 hitUV = w * tri.uvA + u * tri.uvB + v * tri.uvC;
     
+    vec4 albedo =  texture(diffuseTextures, vec3(hitUV, material.textureSlot));
+     
+    if (material.textureSlot > 0) {
+        hitInfo.albedo = albedo.rgb;
+
+        if(hitInfo.albedo.r + hitInfo.albedo.g + hitInfo.albedo.b > 0){
+            hitInfo.albedo = vec3(1.0);
+        }
+    } else {
+        hitInfo.albedo = vec3(1.0);
+    }
+
+    hitInfo.albedo = vec3(albedo.r + albedo.g + albedo.b);
+
     return hitInfo;
 }
-
-
+///////////////////////////////
+//   BVH Traversal Function  //
+///////////////////////////////
 HitInfo TraverseBVH(Ray ray, int nodeOffset, Material material, inout int tests[NUM_DEBUG_STATS]) {
+    // Initialize the closest hit record with no hit and a large distance.
     HitInfo closestHit;
     closestHit.didHit = false;
     closestHit.dst = 1e20;
-    if (!RayIntersectsAABB(ray, nodes[0].minBounds, nodes[0].maxBounds))
+
+    // Early exit: if the ray does not intersect the bounding box of the root node, return immediately.
+    if (!RayIntersectsAABB(ray, nodes[nodeOffset].minBounds, nodes[nodeOffset].maxBounds))
         return closestHit;
 
-    const int MAX_STACK_SIZE = 32;  // Prevent stack overflow
-    int stack[MAX_STACK_SIZE];
+    // Compute global thread index using workgroup and local invocation IDs.
+    int globalWidth = int(gl_NumWorkGroups.x * LOCAL_SIZE_X);
+    int threadIndex = int(gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * globalWidth);
+
+    // Calculate the base index for the per-thread BVH stack.
+    int baseIndex = threadIndex * MAX_STACK_SIZE;
+
+    // Initialize the stack pointer and push the root node onto the stack.
     int stackPtr = 0;
-    stack[stackPtr++] = nodeOffset; // Start from the root node
-    float d1 = 0.0, d2 = 0.0, d3 = 0.0;
-    bool edgeHit = false;
-    
+    bvhStack[baseIndex + stackPtr++] = nodeOffset; // push root node
+
+    float d1 = 0.0, d2 = 0.0; // Temporary variables for intersection distances.
+
+    // Process the stack until it is empty.
     while (stackPtr > 0) {
-        int nodeIndex = stack[--stackPtr];
+        // Pop the top node index from the stack.
+        int nodeIndex = bvhStack[baseIndex + --stackPtr];
         BVHNode node = nodes[nodeIndex];
-        if (node.childIndex == 0) { // Leaf node
+
+        // If the node is a leaf node, test intersection with each triangle.
+        if (node.childIndex == 0) {
             for (int i = 0; i < node.triangleCount; i++) {
                 int triIndex = node.triangleStartIndex + i;
                 Triangle tri = Triangles[triIndex];
-                tests[1]++;
+                tests[1]++; // Increment triangle test counter (for debugging).
                 HitInfo hit = RayTriangle(ray, tri, material);
                 if (hit.didHit && hit.dst < closestHit.dst)
                     closestHit = hit;
             }
         } else {
-            tests[0]++;
+            // Otherwise, this is an internal node. Test both child nodes.
+            tests[0]++; // Increment BVH node test counter (for debugging).
             int childIndexA = node.childIndex;
             int childIndexB = node.childIndex + 1;
             BVHNode childA = nodes[childIndexA];
             BVHNode childB = nodes[childIndexB];
-            float dstA, dstB, dAMax, dBMax;
-            bool hitA = RayIntersectsAABB(ray, childA.minBounds, childA.maxBounds, dstA, dAMax);
-            bool hitB = RayIntersectsAABB(ray, childB.minBounds, childB.maxBounds, dstB, dBMax);
+            float dstA, dstB, dummy;
+            bool hitA = RayIntersectsAABB(ray, childA.minBounds, childA.maxBounds, dstA, dummy);
+            bool hitB = RayIntersectsAABB(ray, childB.minBounds, childB.maxBounds, dstB, dummy);
+            
+            // Order the children so the nearer one is processed first.
             bool isNearestA = dstA <= dstB;
+            int nearChild = isNearestA ? childIndexA : childIndexB;
+            int farChild  = isNearestA ? childIndexB : childIndexA;
             float dstNear = isNearestA ? dstA : dstB;
             float dstFar = isNearestA ? dstB : dstA;
-            int childIndexNear = isNearestA ? childIndexA : childIndexB;
-            int childIndexFar = isNearestA ? childIndexB : childIndexA;
-            if (dstFar < closestHit.dst)
-                stack[stackPtr++] = childIndexFar;
-            if (dstNear < closestHit.dst)
-                stack[stackPtr++] = childIndexNear;
+            
+            // If the far child could potentially be closer than the current hit,
+            // and there's room in the stack, push it.
+            if (dstFar < closestHit.dst && stackPtr < MAX_STACK_SIZE)
+                bvhStack[baseIndex + stackPtr++] = farChild;
+            // Always push the nearer child if its intersection distance is promising.
+            if (dstNear < closestHit.dst && stackPtr < MAX_STACK_SIZE)
+                bvhStack[baseIndex + stackPtr++] = nearChild;
         }
     }
     return closestHit;
 }
 
+
+///////////////////////////////
+//    Debug Ray Function     //
+///////////////////////////////
 bool DebugRay(vec3 rayOrigin, vec3 rayDir, vec3 start, vec3 end, out float debugT) {
+    // Compute the vector along the debug line segment.
     vec3 ab = end - start;
+    // Compute the vector from the start of the segment to the ray origin.
     vec3 ao = rayOrigin - start;
+    // Cross products for calculating the closest distance from the ray to the segment.
     vec3 ab_cross_d = cross(ab, rayDir);
     vec3 ao_cross_d = cross(ao, rayDir);
+    // Compute squared length of the segment.
     float ab_dot_ab = dot(ab, ab);
+    // Project the vector from start to ray origin onto the segment.
     float ab_dot_ao = dot(ab, ao);
+    // Compute dot product of the segment with the ray direction.
     float ab_dot_d = dot(ab, rayDir);
+    // Calculate the parameter 't' along the ray at which the closest approach occurs.
     float t = (ab_dot_ao * ab_dot_d - ab_dot_ab * dot(ao, rayDir)) /
               (ab_dot_ab * dot(rayDir, rayDir) - ab_dot_d * ab_dot_d);
+    // Compute the closest point on the ray.
     vec3 closestPoint = rayOrigin + rayDir * t;
+    // Project the closest point onto the line segment.
     vec3 projOnSegment = start + ab * clamp(dot(closestPoint - start, ab) / ab_dot_ab, 0.0, 1.0);
+    // Compute the distance from the closest point to the segment.
     float dist = length(closestPoint - projOnSegment);
+    // Output the parameter 't' for debugging purposes.
     debugT = t;
+    // Return true if the distance is less than the defined threshold.
     return dist < 0.01; // Line thickness threshold
 }
 /*
@@ -593,10 +708,12 @@ HitInfo RayAllSpheres(Ray ray) {
     closestHit.hitPoint = vec3(0.0);
     closestHit.normal = vec3(0.0);
     closestHit.dst = 1.0 / 0.0; // Infinity
+    const float epsilon = 1e-5; // threshold to avoid z-fighting
+
     for (int i = 0; i < NumSpheres; i++) {
         Sphere sphere = spheres[i];
         HitInfo hitInfo = RaySphere(ray, sphere.position, sphere.radius.x, sphere.material);
-        if (hitInfo.didHit && hitInfo.dst < closestHit.dst)
+        if (hitInfo.didHit && hitInfo.dst < closestHit.dst && hitInfo.dst > epsilon)
             closestHit = hitInfo;
     }
     return closestHit;
@@ -608,6 +725,8 @@ HitInfo RayAllBVHMeshes(Ray ray, inout int tests[NUM_DEBUG_STATS]) {
     closestHit.hitPoint = vec3(0.0);
     closestHit.normal = vec3(0.0);
     closestHit.dst = 1.0 / 0.0; // Infinity
+
+
     for (int i = 0; i < NumModels; i++) {
         Model model = Models[i];
         HitInfo info = TraverseBVH(ray, model.NodeOffset, model.material, tests);
@@ -644,6 +763,7 @@ vec3 FullTrace(Ray ray, inout vec2 state) {
 
     for (int i = 0; i < NumberOfBounces; i++) {
         HitInfo hitInfo;
+        //hitInfo.albedo = vec3(1.0);
         hitInfo.didHit = false;
         hitInfo.dst = 1e20;
         HitInfo hitInfoSphere = RayAllSpheres(ray);
@@ -662,45 +782,26 @@ vec3 FullTrace(Ray ray, inout vec2 state) {
             rayLight += emission * rayColor;
             vec3 normal = hitInfo.normal;
             float opacity = hitInfo.material.opacity.x;
-            // Transparent material handling
-            if (opacity < 1.0) {
-                float refractiveIndex = 1.5; // Glass index
-                bool isEntering = dot(ray.direction, normal) < 0.0;
-                vec3 surfaceNormal = isEntering ? normal : -normal;
-                float eta = isEntering ? (1.0 / refractiveIndex) : refractiveIndex;
-                vec3 refractedDir = refract(ray.direction, surfaceNormal, eta);
-                float cosTheta = abs(dot(normalize(-ray.direction), surfaceNormal));
-                float fresnel = SchlickApproximation(cosTheta, eta);
-                if (rand(state) < fresnel) {
-                    vec3 diffuseDir = normalize(normal + RandomDirection(state));
-                    vec3 specularDir = reflect(ray.direction, normal);
-                    bool isSpecular = hitInfo.material.specularProbability.x >= rand(state);
-                    ray.direction = mix(diffuseDir, specularDir, hitInfo.material.smoothness.x * float(isSpecular));
-                } else {
-                    ray.direction = normalize(ray.direction);
-                }
-                rayColor *= hitInfo.material.diffuseColor;
-            }
-            else 
-            {
-                // Opaque material handling
-                vec3 diffuseDir = normalize(CosineSampleHemisphere(normal, state));
-                vec3 specularDir = reflect(ray.direction, normal);
-                bool isSpecular = hitInfo.material.specularProbability.x >= rand(state);
-                ray.direction = mix(diffuseDir, specularDir, hitInfo.material.smoothness.x * float(isSpecular));
-                rayColor *= mix(hitInfo.material.diffuseColor, hitInfo.material.specularColor, float(isSpecular)) * opacity;
 
-                // Random early exit if ray colour is nearly 0 (can't contribute much to final result)
-				float p = max(rayColor.r, max(rayColor.g, rayColor.b));
-				if (rand(state) >= p) {
-					break;
-				}
-                ray.origin = hitInfo.hitPoint + ray.direction * 1e-4;
-				rayColor /= p;
-            }
+            // Opaque material handling
+            vec3 diffuseDir = normalize(CosineSampleHemisphere(normal, state));
+            vec3 specularDir = reflect(ray.direction, normal);
+            bool isSpecular = hitInfo.material.specularProbability.x >= rand(state);
+            ray.direction = mix(diffuseDir, specularDir, hitInfo.material.smoothness.x * float(isSpecular));
+            vec3 effectiveDiffuse = hitInfo.material.diffuseColor * hitInfo.albedo;
+            rayColor *= mix(effectiveDiffuse, hitInfo.material.specularColor, float(isSpecular)) * opacity;
+
+            // Random early exit if ray colour is nearly 0 (can't contribute much to final result)
+			float p = max(rayColor.r, max(rayColor.g, rayColor.b));
+			if (rand(state) >= p) {
+				break;
+			}
+            ray.origin = hitInfo.hitPoint + ray.direction * 1e-4;
+			rayColor /= p;
+            
         } else {
             // No hit: accumulate ambient sky light and break
-            rayLight += rayColor * GetAmbientLight(ray);
+            rayLight += rayColor * GetAmbientLight(ray) * SkyStrength;
             break;
         }
     }
@@ -723,6 +824,215 @@ vec3 FullTrace(Ray ray, inout vec2 state) {
     }
     return color;
 }
+
+////////////////////////////////////////////////////////////////////////////////
+//                                                                            //
+//  ╔════════════════════════════════════════════════════════════════════╗    //
+//  ║                                                                    ║    //
+//  ║                        BIDIRECTIONAL SAMPLING                      ║    //
+//  ║                                                                    ║    //
+//  ╚════════════════════════════════════════════════════════════════════╝    //
+//                                                                            //
+//  Implements bidirectional sampling for advanced global illumination.       //
+//                                                                            //
+////////////////////////////////////////////////////////////////////////////////
+
+
+// Define a maximum path length (number of vertices)
+#define MAX_PATH_LENGTH 6
+
+// Structure to store a vertex along a path.
+struct Vertex {
+    vec3 position;
+    vec3 normal;
+    Material material;
+    vec3 throughput; // Cumulative product of BSDF, cosine, etc.
+    float PDF;
+};
+
+// Structure to return both luminance and (unnormalized) probability.
+struct PathContribution {
+    vec3 luminance;
+    float probability;
+};
+
+//
+// Build a camera (eye) subpath from the lens edge.
+// 't' is the desired number of vertices along the camera path.
+// 'seed' is a mutable random seed vector.
+int BuildCameraPath(out Vertex path[MAX_PATH_LENGTH], int t, inout vec2 seed, vec3 initDirUV) {
+
+    Ray ray;
+    ray.origin = camera.position;
+    ray.direction = initDirUV;
+
+    // The initial throughput is unity.
+    vec3 throughput = vec3(1.0);
+    float PDF = 1;
+
+    int count = 0;
+    vec3 lastNormal = vec3(0.0);
+
+    path[0].position = camera.position;
+    path[0].throughput = throughput;
+    count++;
+
+    int tests[NUM_DEBUG_STATS];
+    for (int j = 0; j < NUM_DEBUG_STATS; j++) { tests[j] = 0; }
+
+    // Trace the path for t bounces (or until no hit)
+    for (int i = 0; i < t; i++) {
+        // Compute intersections (choose the closest hit among spheres and BVH meshes)
+         HitInfo hitInfoSphere = RayAllSpheres(ray);
+
+        // HitInfo hitInfoMesh = RayAllBVHMeshes(ray, tests);
+        HitInfo hitInfo = hitInfoSphere;
+        //if (hitInfoMesh.didHit && hitInfoMesh.dst < hitInfo.dst)
+       //     hitInfo = hitInfoMesh;
+        
+        // If no intersection, terminate the subpath.
+        if (!hitInfo.didHit)
+            break;
+
+        // Store the vertex information.
+        path[count].position = hitInfo.hitPoint;
+        path[count].normal = hitInfo.normal;
+        path[count].material = hitInfo.material;
+        path[count].throughput = throughput;
+        path[count].PDF = i > 0 ? max(0,dot(ray.direction, lastNormal)) / M_PI : 1;
+        count++;
+
+        // For simplicity, assume a Lambertian reflection.
+        vec3 newDir = CosineSampleHemisphere(hitInfo.normal, seed);
+        // Update throughput by multiplying by the diffuse reflectance.
+        throughput *= hitInfo.material.diffuseColor;
+        
+        // Spawn the next ray (offset to avoid self-intersection).
+        ray.origin = hitInfo.hitPoint + newDir * 1e-4;
+        ray.direction = newDir;
+    }
+    return count;
+}
+
+//
+// Build a light subpath from an emissive source.
+// 's' is the desired number of vertices along the light path.
+// 'seed' is a mutable random seed vector.
+int BuildLightPath(out Vertex path[MAX_PATH_LENGTH], int s, inout vec2 seed) {
+    // For demonstration, assume the first sphere is an emissive light source.
+    Sphere lightSphere = spheres[0];
+    int count = 0;
+
+    // Sample a point on the sphere's surface.
+    float u = rand(seed);
+    float v = rand(seed);
+    float theta = 2.0 * M_PI * u;
+    float phi = acos(1.0 - 2.0 * v);
+    float r = lightSphere.radius.x;
+    vec3 lightPos = lightSphere.position + vec3(r * sin(phi) * cos(theta),
+                                                 r * sin(phi) * sin(theta),
+                                                 r * cos(phi));
+    // Use the sphere's outward normal at that point.
+    vec3 normal = normalize(lightPos - lightSphere.position);
+    // Generate an initial ray direction from the light by cosine sampling.
+    vec3 rayDir = CosineSampleHemisphere(normal, seed);
+    Ray ray;
+    ray.origin = lightPos;
+    ray.direction = rayDir;
+    
+    float area = 0;
+    // Set the initial throughput to the light’s emission.
+    vec3 throughput = vec3(1.0);
+    
+    path[0].position = lightPos;
+    path[0].throughput = throughput;
+    path[0].material = lightSphere.material;
+
+    count++;
+
+    int tests[NUM_DEBUG_STATS];
+    for (int j = 0; j < NUM_DEBUG_STATS; j++) { tests[j] = 0; }
+
+    for (int i = 0; i < s; i++) {
+        HitInfo hitInfoSphere = RayAllSpheres(ray);
+        //HitInfo hitInfoMesh = RayAllBVHMeshes(ray, tests);
+        HitInfo hitInfo = hitInfoSphere;
+       // if (hitInfoMesh.didHit && hitInfoMesh.dst < hitInfo.dst)
+       //     hitInfo = hitInfoMesh;
+        
+        if (!hitInfo.didHit)
+            break;
+
+      
+        path[count].position = hitInfo.hitPoint;
+        path[count].normal = hitInfo.normal;
+        path[count].material = hitInfo.material;
+        path[count].throughput = throughput;
+        count++;
+
+        // Again, assume Lambertian scattering.
+        vec3 newDir = CosineSampleHemisphere(hitInfo.normal, seed);
+        throughput *= hitInfo.material.diffuseColor;
+        
+        ray.origin = hitInfo.hitPoint + newDir * 1e-4;
+        ray.direction = newDir;
+    }
+    return count;
+}
+
+//
+// Connect (join) a camera subpath and a light subpath.
+// For simplicity this example connects the last vertex of each subpath.
+// It returns both the computed luminance and a (placeholder) probability weight.
+PathContribution JoinPaths(Vertex camPath[MAX_PATH_LENGTH], int camCount,
+                             Vertex lightPath[MAX_PATH_LENGTH], int lightCount) {
+    PathContribution contrib;
+    contrib.luminance = vec3(0.0);
+    contrib.probability = 0.0;
+    
+    // Make sure both subpaths contain at least one vertex.
+    if (camCount > 0 && lightCount > 0) {
+        Vertex vCam = camPath[camCount - 1];
+        Vertex vLight = lightPath[lightCount - 1];
+        
+        // Compute the connection vector between the two vertices.
+        vec3 dir = normalize(vLight.position - vCam.position);
+        float distance = length(vLight.position - vCam.position);
+        
+        // Check for occlusion (shadow ray test).
+        Ray shadowRay;
+        shadowRay.origin = vCam.position + dir * 1e-4;
+        shadowRay.direction = dir;
+        HitInfo shadowHitSphere = RayAllSpheres(shadowRay);
+        int tests[NUM_DEBUG_STATS];
+        for (int j = 0; j < NUM_DEBUG_STATS; j++) { tests[j] = 0; }
+        HitInfo shadowHitMesh = RayAllBVHMeshes(shadowRay, tests);
+        float hitDistance = 1e20;
+        if (shadowHitSphere.didHit)
+            hitDistance = min(hitDistance, shadowHitSphere.dst);
+        if (shadowHitMesh.didHit)
+            hitDistance = min(hitDistance, shadowHitMesh.dst);
+        if (hitDistance < distance - 1e-3) {
+            // The two vertices are not mutually visible.
+            return contrib;
+        }
+        
+        // For a simple Lambertian BSDF, the value is diffuseColor/PI.
+        vec3 bsdfCam = vCam.material.diffuseColor;
+        vec3 bsdfLight = vLight.material.diffuseColor / M_PI;
+        
+        // Compute a simple geometric term.
+        float G = abs(dot(vCam.normal, dir)) * abs(dot(vLight.normal, -dir)) / (distance * distance);
+        
+        // The final contribution multiplies the throughputs, the BSDFs, and the geometry.
+        vec3 throughput = vCam.throughput * vLight.throughput;
+        
+        contrib.probability = vCam.PDF * vLight.PDF;
+        contrib.luminance = throughput;
+    }
+    return contrib;
+}
+
 
 ///////////////////////////////
 //  SCREEN COORDINATE HELPERS  //
@@ -765,149 +1075,201 @@ vec2 rayToNDC(vec3 rayDir, vec3 cameraForward, float tanHalfFovY, float aspect) 
 //        MAIN FUNCTION      //
 ///////////////////////////////
 
+
 void main() {
-    // Get the pixel coordinates and image dimensions.
+    // Setup common values.
     ivec2 pixel_coords = ivec2(gl_GlobalInvocationID.xy);
     ivec2 dims = imageSize(screen);
-    ivec2 dimsA = imageSize(averageScreen);
+    ivec2 workGroup = ivec2(gl_WorkGroupID.xy);
+    ivec2 localThread = ivec2(gl_LocalInvocationID.xy);
 
-    ivec2 workGroup = ivec2(gl_WorkGroupID.xy);          // e.g., (0, 0, 0), (1, 0, 0), etc.
-    ivec2 localThread = ivec2(gl_LocalInvocationID.xy);    // e.g., ranges from (0,0,0) to (7,7,0)
-
-    // Convert pixel coordinates to normalized device coordinates [-1, 1].
     float u = (float(pixel_coords.x + 0.5) / float(dims.x)) * 2.0 - 1.0;
     float v = (float(pixel_coords.y + 0.5) / float(dims.y)) * 2.0 - 1.0;
     float aspectRatio = float(dims.x) / float(dims.y);
     u *= aspectRatio;
 
-    // Compute camera basis and field-of-view tangent.
     float fovTan = tan(radians(camera.fov.x) * 0.5);
     vec3 forward = normalize(camera.direction);
     vec3 right = normalize(cross(forward, vec3(0, 1, 0)));
     vec3 up = cross(right, forward);
 
-    // Initialize the mutation state using the random sample.
-    vec2 currentState = vec2(localThread.y* 0.00015663347 + uTime * 0.00035663347- v* 0.0002663347,
-    localThread.x* 0.00045663347 + Frame* 0.00045663347 - uTime* 0.00045663347 + u* 0.00045663347) * 0.045663347;
+    // Initialize mutation state.
+    vec2 currentState = vec2(
+        localThread.y * 0.00015663347 + uTime * 0.00035663347 - v * 0.0002663347,
+        localThread.x * 0.00045663347 + Frame * 0.00045663347 - uTime * 0.00045663347 + u * 0.00045663347
+    ) * 0.045663347;
+    vec3 currentSample = vec3(0.0);
 
-    // Generate a random sample in UV space for the current pixel.
-
-    // Trace the initial path sample.
-    vec3 currentSample;
-
-    if (METROPLIS) {
-        float imageRegionSizeX = 1.0 / float(LOCAL_SIZE_X * METROPLIS_DISPATCH_X);
-        float imageRegionSizeY = 1.0 / float(LOCAL_SIZE_Y * METROPLIS_DISPATCH_Y);
-
-        float imageRegionOffsetX = localThread.x  * imageRegionSizeX + workGroup.x * imageRegionSizeX * 8;
-        float imageRegionOffsetY = localThread.y  * imageRegionSizeY + workGroup.y * imageRegionSizeY * 8;
-
-        ivec2 globalBurnIn = ivec2(int(imageRegionOffsetX * dimsA.x), int(imageRegionOffsetY * dimsA.y)); 
-
-        if (Frame == 0 && globalBurnIn == ivec2(0,0)) {
-            
-            vec3 burnInSampleColor = vec3(0.0);
-            float burnInSampleLum = 0.0;
-
-            int tries = 0;
-
-            while(burnInSampleLum == 0 && tries < 10){
-                 for (int i = 0; i < BurnInSamples; i++) {
-                    vec2 sampleState = currentState + float(i) * 0.12345;
-
-                    // Generate random ray direction
-                    float u_rand = rand(sampleState) * 2.0 - 1.0;
-                    float v_rand = rand(sampleState) * 2.0 - 1.0;
-                    u_rand *= aspectRatio;
-
-                    vec3 rayDir = normalize(forward + u_rand * fovTan * right + v_rand * fovTan * up);
-                    Ray ray;
-                    ray.origin = camera.position;
-                    ray.direction = rayDir;
-
-                    vec3 sampleColor = FullTrace(ray, sampleState);
-                    burnInSampleColor += sampleColor;
-                    burnInSampleLum += dot(sampleColor, vec3(0.2126, 0.7152, 0.0722));
-                }
-                tries++;
-            }
-
-            burnInSampleColor /= float(BurnInSamples);
-            burnInSampleLum /= float(BurnInSamples);
-
-            imageStore(averageScreen, globalBurnIn,vec4(burnInSampleLum));
-
-        } else
+    // --- Compile-Time Branch Based on Render Mode ---
+    #if defined(RENDER_MODE_0)
+        // RENDER_MODE_0: Simple path tracing with multiple rays.
         {
-            vec2 currentUV;
-            if(Frame == 0)
-            {
-                float x = rand(currentState) * imageRegionSizeX + imageRegionOffsetX;
-                float y = rand(currentState) * imageRegionSizeY + imageRegionOffsetY;
-
-                vec2 randomSample = vec2(x,y);
-
-                float u_random = randomSample.x * 2.0 - 1.0;
-                float v_random = randomSample.y * 2.0 - 1.0;
-                u_random *= aspectRatio;
-                vec2 rand_uv = vec2(u_random, v_random);
-                currentUV = rand_uv;
-            } else{
-                currentUV = imageLoad(metroDir, globalBurnIn).rg;
+            currentState = vec2(u + float(Frame + uTime) * 0.09201489,
+                                v + float(Frame + uTime) * 0.06101789);
+            vec3 rayDir = normalize(forward + u * fovTan * right + v * fovTan * up);
+            Ray ray;
+            ray.origin = camera.position;
+            ray.direction = rayDir;
+            vec3 totalSample = vec3(0.0);
+            vec2 stateCopy = currentState;
+            for (int i = 0; i < NumberOfRays; i++) {
+                vec2 defocusJitter = RandomPointInCircle(stateCopy) * DefocusStrength / dims.x;
+                vec3 rayOrigin = camera.position + right * defocusJitter.x + up * defocusJitter.y;
+                vec3 focusPoint = camera.position + rayDir * FocusDistance;
+                vec2 jitter = RandomPointInCircle(stateCopy) * DivergeStrength / dims.x;
+                vec3 jitteredFocusPoint = focusPoint + right * jitter.x + up * jitter.y;
+                ray.origin = rayOrigin;
+                ray.direction = normalize(jitteredFocusPoint - rayOrigin);
+                totalSample += FullTrace(ray, stateCopy);
+                stateCopy = vec2(rand(stateCopy), rand(stateCopy));
             }
+            currentSample = totalSample / float(NumberOfRays + 1);
+        }
+    #elif defined(RENDER_MODE_1)
+        // RENDER_MODE_1: Metropolis sampling mode.
+        {
+            // Calculate the size of each image region based on the workgroup and dispatch sizes.
+            float imageRegionSizeX = 1.0 / float(LOCAL_SIZE_X * METROPLIS_DISPATCH_X);
+            float imageRegionSizeY = 1.0 / float(LOCAL_SIZE_Y * METROPLIS_DISPATCH_Y);
 
-            // Reinitialize the mutation state.
-            currentState = vec2(currentUV.x + float(Frame + uTime) * 0.09201489,
-                                currentUV.y + float(Frame + uTime) * 0.06101789);
+            // Calculate the offset of the current thread's image region.
+            float imageRegionOffsetX = localThread.x * imageRegionSizeX + workGroup.x * imageRegionSizeX * LOCAL_SIZE_X;
+            float imageRegionOffsetY = localThread.y * imageRegionSizeY + workGroup.y * imageRegionSizeY * LOCAL_SIZE_Y;
 
-            vec3 rayDir = normalize(forward + 
-                 currentUV.x * fovTan * right + 
-                 currentUV.y * fovTan * up);
+            // Use the pixel coordinates as the global burn-in index.
+            ivec2 globalBurnIn = pixel_coords; 
 
-             Ray ray;
-             ray.origin = camera.position;
-             ray.direction = rayDir;
-            if(Frame == 0){
-               currentSample = FullTrace(ray, currentState);
-            } else {
-               currentSample = imageLoad(metroSample, globalBurnIn).rgb;
+            // Burn-in phase: perform additional sampling until a non-zero luminance is achieved, or a maximum number of tries.
+            if (Frame == 0) {
+                vec3 burnInSampleColor = vec3(0.0);
+                float burnInSampleLum = 0.0;
+
+                int tries = 0;
+                int burnIns = 0;
+                // Create a copy of the mutation state.
+                vec2 stateCopy = currentState;
+
+                // Repeat sampling until we get a non-zero luminance or we reach 10 tries.
+                while(burnInSampleLum == 0 && tries < 10) {
+                    for (int i = 0; i < BurnInSamples; i++) {
+                        // Update the state copy with a small variation.
+                        vec2 stateCopy = currentState + vec2(
+                            localThread.y * 0.0002355663347 + uTime * 0.0003464347 - v * 0.0002663347,
+                            localThread.x * 0.00098747 + Frame * 0.000098347 - uTime * 0.00012353347 + u * 0.000234663347
+                        ) * 0.05678347;
+
+                        // Generate a random ray direction.
+                        float u_rand = rand(stateCopy) * 2.0 - 1.0;
+                        float v_rand = rand(stateCopy) * 2.0 - 1.0;
+                        u_rand *= aspectRatio;
+
+                        vec3 rayDir = normalize(forward + u_rand * fovTan * right + v_rand * fovTan * up);
+                        Ray ray;
+                        ray.origin = camera.position;
+                        ray.direction = rayDir;
+
+                        // Trace the ray and accumulate the sample color.
+                        vec3 sampleColor = FullTrace(ray, stateCopy);
+                        burnInSampleColor += sampleColor;
+                        burnInSampleLum += dot(sampleColor, vec3(0.2126, 0.7152, 0.0722)); // Compute luminance.
+                        burnIns++;
+                    }
+                    tries++;
+                }
+
+                // Average the burn-in samples.
+                burnInSampleColor /= float(burnIns);
+                burnInSampleLum /= float(burnIns);
+
+                // Load the previously accumulated burn-in data from the averageScreen.
+                vec4 oldBurnIn = imageLoad(averageScreen, ivec2(0, 0));
+                int oldCount = int(oldBurnIn.a);
+                // Compute new average luminance.
+                float rgb = (oldBurnIn.r * float(oldCount) + burnInSampleLum) / (float(oldCount) + 1.0f);
+
+                // Store the updated average luminance back to averageScreen.
+                imageStore(averageScreen, ivec2(0, 0), vec4(rgb, rgb, rgb, oldCount + 1));
             }
-            float b = 1.00;
-            //b /= float(NumberOfMutations);
-            // Mutation loop: perform Metropolis mutations for a number of iterations.
-            for (int i = 0; i < NumberOfMutations; i++) {
-                vec3 candidateSample;
-                vec2 candidateState;
-                Ray candidateRay;
+            else {
+                // In subsequent frames, compute the new UV coordinates for mutation.
+                vec2 currentUV;
+                if (Frame == 0) {
+                    // If this is the first frame, compute a new UV using the random state.
+                    float x = rand(currentState) * imageRegionSizeX + imageRegionOffsetX;
+                    float y = rand(currentState) * imageRegionSizeY + imageRegionOffsetY;
+                    vec2 randomSample = vec2(x, y);
 
-                // Perturb the current UV coordinate using an exponential radial lens perturbation.
-                vec2 usampleState = currentState + vec2(float(Frame + uTime) * 0.09201489,
-                                                        float(Frame - uTime) * 0.06101789);
+                    float u_random = randomSample.x * 2.0 - 1.0;
+                    float v_random = randomSample.y * 2.0 - 1.0;
+                    u_random *= aspectRatio;
+                    currentUV = vec2(u_random, v_random);
+                } else {
+                    // Otherwise, load the UV from the metroDir texture.
+                    currentUV = imageLoad(metroDir, globalBurnIn).rg;
+                }
 
-                vec2 candidateUV = lensPerturbation(currentUV, aspectRatio, 1.0 / 1024.0, 1.0/64.0, usampleState);
+                // Reinitialize the mutation state based on the current UV and time.
+                currentState = vec2(
+                    currentUV.x + float(Frame + uTime) * 0.09201489,
+                    currentUV.y + float(Frame + uTime) * 0.06101789
+                );
 
-                // Recompute candidate ray direction from the mutated UV.
-                vec3 candidateRayDir = normalize(forward + candidateUV.x * fovTan * right + candidateUV.y * fovTan * up);
-                candidateRay.origin = camera.position;
-                candidateRay.direction = candidateRayDir;
-                candidateState = candidateUV;
-                candidateState += vec2(float(Frame + uTime) * 0.09201489,float(Frame - uTime) * 0.06101789);
+                // Compute the ray direction from the updated UV.
+                vec3 rayDir = normalize(forward + currentUV.x * fovTan * right + currentUV.y * fovTan * up);
+                Ray ray;
+                ray.origin = camera.position;
+                ray.direction = rayDir;
+                // Trace the ray or load the previous sample depending on the frame.
+                if (Frame == 0) {
+                    currentSample = FullTrace(ray, currentState);
+                } else {
+                    currentSample = imageLoad(metroSample, globalBurnIn).rgb;
+                }
 
-                candidateSample = FullTrace(candidateRay, candidateState);
+                // Get the current average luminance from the averageScreen.
+                float b = imageLoad(averageScreen, ivec2(0, 0)).r;
+                if (b == 0.0) return;
+                vec2 stateCopy = currentState;  // Create a copy for mutation.
 
-                // Compute the luminance of the current and candidate samples.
-                float currentLum = dot(currentSample, vec3(0.2126, 0.7152, 0.0722));
-                float candidateLum = dot(candidateSample, vec3(0.2126, 0.7152, 0.0722));
-                float acceptance = min(1.0, candidateLum / (currentLum + 1e-4));
+                // Mutation loop: perform Metropolis mutations.
+                for (int i = 0; i < NumberOfMutations; i++) {
+                    vec3 candidateSample;
+                    vec2 candidateState;
+                    Ray candidateRay;
 
-                // Metropolis acceptance step.
+                    // Perturb the current UV coordinate using an exponential radial lens perturbation.
+                    stateCopy = currentState * 0.00389725 + vec2(
+                        float(Frame + uTime) * 0.009201489,
+                        float(Frame - uTime) * 0.006101729
+                    );
 
+                    // Generate a candidate UV via lens perturbation.
+                    vec2 candidateUV = lensPerturbation(currentUV, aspectRatio, 1.0 / 10240.0, 1.0 / 64.0, stateCopy);
 
-                // Compute pixel coordinates from the updated ray direction.
+                    // Recompute the candidate ray direction from the mutated UV.
+                    vec3 candidateRayDir = normalize(forward + candidateUV.x * fovTan * right + candidateUV.y * fovTan * up);
+                    candidateRay.origin = camera.position;
+                    candidateRay.direction = candidateRayDir;
+                    candidateState = candidateUV;
+                    candidateState += vec2(
+                        float(Frame + uTime) * 0.009201489,
+                        float(Frame - uTime) * 0.006101789
+                    );
+
+                    // Trace the candidate ray.
+                    candidateSample = FullTrace(candidateRay, candidateState);
+
+                    // Compute the luminance of the current and candidate samples.
+                    float currentLum = dot(currentSample, vec3(0.2126, 0.7152, 0.0722));
+                    float candidateLum = dot(candidateSample, vec3(0.2126, 0.7152, 0.0722));
+                    // Determine the acceptance probability.
+                    float acceptance = min(1.0, candidateLum / (currentLum + 1e-4));
+
+                    // Compute pixel coordinates for the current and candidate rays.
                     ivec2 curPixel = rayToPixel(ray.direction, forward, fovTan, aspectRatio, dims);
                     ivec2 nextPixel = rayToPixel(candidateRay.direction, forward, fovTan, aspectRatio, dims);
 
-                    // Load the current accumulated color.
+                    // Load the current accumulated colors from the oldScreen.
                     vec4 curOld = imageLoad(oldScreen, curPixel);
                     vec4 nextOld = imageLoad(oldScreen, nextPixel);
 
@@ -917,81 +1279,59 @@ void main() {
                     int countOld = int(curOld.a);
                     int countNext = int(nextOld.a);
 
-                    float curweight = 1 / ((currentLum + 1e-4));
-                    float nextWeight = 1 / ((candidateLum + 1e-4));
+                    // Compute weights for blending based on the acceptance probability.
+                    float curweight = (1.0 - acceptance) / ((1.0 / b));
+                    float nextWeight = (acceptance + pLarge) / ((1.0 / b));
 
-                    // Ensure all image accesses are complete before storing.
-                    vec4 currColor =  vec4(currentSample, 1);
-                    vec4 nextColor =  vec4(candidateSample, 1);
+                    // Prepare the new color values.
+                    vec4 currColor = vec4(currentSample, 1);
+                    vec4 nextColor = vec4(candidateSample, 1);
 
                     vec4 weightedRGB = (curOld * float(countOld) + currColor) / (float(countOld) + 1.0f);
                     vec4 weightedRGBNext = (nextOld * float(countNext) + nextColor) / (float(countNext) + 1.0f);
 
-                    vec4 weightedRGBAccum = curOld + currColor;
-                    vec4 weightedRGBNextAccum = nextOld + nextColor;
-             
-                 if (rand(candidateState) < acceptance) {
-                    currentState = candidateState;
-                    currentSample = candidateSample;
-                    ray = candidateRay;
-                    currentUV = candidateUV;            
-                    imageStore(screen, curPixel, vec4(weightedRGB.rgb, countOld + 1.0));
+                    barrier();
+                    memoryBarrier();
 
-                } else{
-                    imageStore(screen, nextPixel, vec4(weightedRGBNext.rgb, countNext + 1.0));
+                    // Metropolis acceptance step:
+                    if (rand(candidateState) < acceptance) {
+                        // Accept the candidate sample.
+                        currentState = candidateState;
+                        currentSample = candidateSample;
+                        ray = candidateRay;
+                        currentUV = candidateUV;
+                        imageStore(screen, curPixel, vec4(weightedRGB.rgb, countOld + 1.0));
+                    } else {
+                        // Otherwise, store the candidate sample at the next pixel.
+                        imageStore(screen, nextPixel, vec4(weightedRGBNext.rgb, countNext + 1.0));
+                    }
+
+                    barrier();
+                    memoryBarrier();
                 }
-
-                barrier();
-                memoryBarrier();
+                // Store the final mutated UV and sample color for reuse in subsequent frames.
+                imageStore(metroDir, globalBurnIn, vec4(currentUV, 1, 1));
+                imageStore(metroSample, globalBurnIn, vec4(currentSample, 1));
             }
-            imageStore(metroDir, globalBurnIn, vec4(currentUV, 1, 1));
-            imageStore(metroSample, globalBurnIn, vec4(currentSample, 1));
+            return;
         }
-    } 
-    else {
-        currentState = vec2(u + float(Frame + uTime) * 0.09201489,
-                            v + float(Frame + uTime) * 0.06101789);
-    
-        vec3 rayDir = normalize(forward + u * fovTan * right + v * fovTan * up);
-    
-        vec3 totalSample = vec3(0.0);
-        vec2 stateCopy = currentState;  // Create a copy of the state
-
-
-        for (int i = 0; i < NumberOfRays; i++) {
-             Ray ray;
-
-             vec2 defocusJitter = RandomPointInCircle(stateCopy) * DefocusStrength / dims.x;
-		     vec3 rayOrigin = camera.position + right * defocusJitter.x + up * defocusJitter.y;
-
-             vec3 focusPoint = camera.position + rayDir * FocusDistance;
-
-             vec2 jitter = RandomPointInCircle(stateCopy) * DivergeStrength / dims.x;
-			 vec3 jitteredFocusPoint = focusPoint + right * jitter.x + up * jitter.y;
-
-             ray.origin = rayOrigin;
-             ray.direction = normalize(jitteredFocusPoint - rayOrigin);
-             totalSample += FullTrace(ray, stateCopy);
-             // Optionally update stateCopy to get a new seed per iteration
-             stateCopy = vec2(rand(stateCopy), rand(stateCopy));
+    #elif defined(RENDER_MODE_2)
+        // RENDER_MODE_2: Bidirectional sampling mode.
+        {
+            vec3 rayDir = normalize(forward + u_coord * fovTan * right + v_coord * fovTan * up);
+            vec2 stateCopy = currentState;
+            Vertex camPath[MAX_PATH_LENGTH];
+            Vertex lightPath[MAX_PATH_LENGTH];
+            int camCount = BuildCameraPath(camPath, 3, stateCopy, rayDir);
+            int lightCount = BuildLightPath(lightPath, 3, stateCopy);
+            PathContribution pathContrib = JoinPaths(camPath, camCount, lightPath, lightCount);
+            currentSample += pathContrib.luminance;
         }
-        currentSample = totalSample / float(NumberOfRays + 1);
-    }
+    #endif
 
-    // Retrieve the final color for the current pixel.
-    vec3 color;
-    if (METROPLIS) {
-        //color = imageLoad(screen, pixel_coords).rgb;
-        //imageStore(screen, pixel_coords, vec4(average, 1.0));
-    } else {
-        color = currentSample;
-
-        vec3 old = imageLoad(oldScreen, pixel_coords).rgb;
-        float weight = 1.0 / (Frame + 1.0);
-        vec3 average = clamp(old * (1.0 - weight) + color * weight, 0, 1);
-
-        imageStore(screen, pixel_coords, vec4(average, 1.0));
-    }
-
-
+    // Final accumulation and output.
+    vec3 old = imageLoad(oldScreen, pixel_coords).rgb;
+    float weight = 1.0 / (Frame + 1.0);
+    vec3 average = clamp(old * (1.0 - weight) + currentSample * weight, 0.0, 1.0);
+    imageStore(screen, pixel_coords, vec4(average, 1.0));
 }
