@@ -1,4 +1,4 @@
-#pragma once // Instead of using include guards.
+﻿#pragma once // Instead of using include guards.
 #include <vector>
 #include <iostream>
 #include<glad/glad.h>
@@ -26,7 +26,6 @@
 #define AI_MATKEY_GLTF_BASE_COLOR_FACTOR "$mat.gltf.baseColorFactor", 0, 0
 #define AI_MATKEY_GLTF_METALLIC_FACTOR "$mat.gltf.metallicFactor", 0, 0
 #define AI_MATKEY_GLTF_ROUGHNESS_FACTOR "$mat.gltf.roughnessFactor", 0, 0
-
 
 class ASSModel
 {
@@ -79,19 +78,28 @@ public:
 		// scene = importer.ReadFile(model_path, aiProcess_Triangulate | aiProcess_FlipUVs);
 		// scene = importer.ReadFile(model_path, NULL);			
 
+		// Check if there are embedded textures
+		if (scene->HasTextures()) {
+			std::cout << "Model has embedded textures." << std::endl;
+		}
+		else {
+			std::cout << "Model does NOT have embedded textures." << std::endl;
+		}
+
 		load_model(); // Uncomment only one of these two load model functions.
 		// load_model_cout_console();
 	}
 
 
-	void ExtractPBRProperties(const aiMaterial* material, Material& outMat) {
+	Material ExtractPBRProperties(const aiMaterial* material, const Material& outMat) {
 		// Base Color Factor (RGBA)
+		Material newMat = outMat;
+
 		aiColor4D baseColor;
 		if (aiReturn_SUCCESS == material->Get(AI_MATKEY_COLOR_DIFFUSE, baseColor)) {
 			// Store only the RGB components (or use alpha for opacity)
-			outMat.diffuseColor = glm::vec3(baseColor.r, baseColor.g, baseColor.b);
+			newMat.diffuseColor = glm::vec3(baseColor.r, baseColor.g, baseColor.b);
 			// You might also want to store alpha into your opacity field:
-			outMat.opacity = glm::vec3(baseColor.a);
 		}
 
 
@@ -100,7 +108,7 @@ public:
 		if (aiReturn_SUCCESS == material->Get(AI_MATKEY_REFLECTIVITY, metallic)) {
 			// You can decide where to store this value.
 			// For instance, you might pack it into specularProbability or a dedicated field.
-			outMat.specularChance = glm::vec3(metallic);
+			//newMat.specularChance = glm::vec3(metallic);
 		}
 
 
@@ -108,7 +116,25 @@ public:
 		float roughness = 1.0f;
 		if (AI_SUCCESS == material->Get(AI_MATKEY_ROUGHNESS_FACTOR, roughness)) {
 			// For example, you might use smoothness as the inverse of roughness:
-			outMat.smoothness = glm::vec3(1.0f - roughness);
+			//newMat.smoothness = glm::vec3(1.0f - roughness);
+		}
+
+
+		// — Emission Factor — 
+		// Read the emissive color (Ke) instead of the ambient slot:
+		aiColor3D emissive(0.f, 0.f, 0.f);
+		if (AI_SUCCESS == material->Get(AI_MATKEY_COLOR_EMISSIVE, emissive)) {
+			// Factor out strength and pure color:
+			glm::vec3 Ke(emissive.r, emissive.g, emissive.b);
+			float strength = glm::max(glm::max(Ke.r, Ke.g), Ke.b);
+			if (strength > 0.0f) {
+				newMat.emmisionColor = Ke / strength;
+				newMat.emmisionStrength = strength;
+			}
+			else {
+				newMat.emmisionColor = glm::vec3(0.0f);
+				newMat.emmisionStrength = 0.0f;
+			}
 		}
 
 		// Extract Base Color Texture Path
@@ -120,23 +146,22 @@ public:
 		else {
 			//regular file, check if it exists and read it
 		}
+
+		return newMat;
 	}
 
-	std::vector<Triangle> ToTriangles(Material material, float scale, glm::vec3 position, Shader& shader, BVH& bvh) {
-		std::vector<Triangle> allTriangles = {};
+	std::vector<Triangle> ToTriangles
+	(Material material, float scale, glm::vec3 position, Shader& shader, BVH& bvh, bool overrideMap = false, bool hasNorm = true) {
+		std::vector<Triangle> allTriangles;
+		std::unordered_map<GLuint, GLuint> textureSlotMap; // tex_handle → layer index mapping
 
-		std::vector<GLuint> textureIDs; // Your individual texture IDs (mesh.tex_handle values)
-
+		// First, create and bind your texture array
 		GLuint textureArray;
 		glGenTextures(1, &textureArray);
 		glBindTexture(GL_TEXTURE_2D_ARRAY, textureArray);
+		const int texWidth = 4096;
+		const int texHeight = 4096;
 
-		int texWidth = 2048;  // Ideally determined per texture
-		int texHeight = 2048;
-		int numLayers = texture_list.size();
-		int numChannels = 3; // Adjust if needed for RGBA
-
-		// Create storage
 		glTexStorage3D(GL_TEXTURE_2D_ARRAY, 1, GL_RGB8, texWidth, texHeight, texture_list.size());
 
 		glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
@@ -144,90 +169,90 @@ public:
 		glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_S, GL_REPEAT);
 		glTexParameteri(GL_TEXTURE_2D_ARRAY, GL_TEXTURE_WRAP_T, GL_REPEAT);
 
-		// Load each texture image to the texture array
+		// Load textures and fill the hashmap
+		std::unordered_map<unsigned int, int> texHandleToLayer;
+
+		int currentLayer = 0;
+
+		glm::mat4 correctionMatrix = glm::mat4(1.0f);
+
+		// Check if the model is FBX
+		if (std::filesystem::path(modelPath).extension() == ".fbx") {
+			// Rotate -90 degrees around the X-axis to correct orientation.
+			correctionMatrix = glm::rotate(glm::mat4(1.0f), glm::radians(-90.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+		}
+
 		for (int i = 0; i < texture_list.size(); i++)
 		{
 			int width, height, num_channels;
-			unsigned char* pixels = stbi_load(texture_list[i].image_name.c_str(), &width, &height, &num_channels, 0);
+			std::filesystem::path modelDir = std::filesystem::path(modelPath).parent_path();
+			std::filesystem::path texturePath(texture_list[i].image_name.c_str());
+			std::filesystem::path fullTexturePath = modelDir / texturePath;
+			std::string fileName = fullTexturePath.string();
 
-			if (pixels)
-			{
-				GLenum format = GL_RGB;
-				if (num_channels == 4) format = GL_RGBA;
-				else if (num_channels == 3) format = GL_RGB;
-				else if (num_channels == 1) format = GL_RED;
+			unsigned char* pixels = stbi_load(fileName.c_str(), &width, &height, &num_channels, 0);
+			if (pixels) {
+				GLenum format = (num_channels == 4) ? GL_RGBA : GL_RGB;
 
-				glTexSubImage3D(GL_TEXTURE_2D_ARRAY,
-					0,
-					0, 0, i, // xoffset, yoffset, layer
-					width, height, 1,
-					format, GL_UNSIGNED_BYTE,
-					pixels);
+				glTexSubImage3D(GL_TEXTURE_2D_ARRAY, 0, 0, 0, i,
+					width, height, 1, format, GL_UNSIGNED_BYTE, pixels);
 
 				stbi_image_free(pixels);
+
+				// Store mapping from tex_handle (ID) to texture array layer index
+				texHandleToLayer[texture_list[i].textureID] = i;  // hashmap assignment
 			}
-			else
-			{
-				std::cerr << "Failed to load texture: " << texture_list[i].image_name << std::endl;
+			else {
+				std::cerr << "Failed to load texture: " << fileName << "\n";
 				stbi_image_free(pixels);
 			}
 		}
 
-		// Generate MipMaps for better filtering
 		glGenerateMipmap(GL_TEXTURE_2D_ARRAY);
 		glBindTexture(GL_TEXTURE_2D_ARRAY, 0);
 
+		// Iterate over meshes to construct triangles
 		for (int a = 0; a < mesh_list.size(); a++) {
-			auto mesh = mesh_list[a];
-			std::vector<Triangle> meshTriangles = {};
+			auto& mesh = mesh_list[a];
+			std::vector<Triangle> meshTriangles;
 
-			std::vector<glm::vec3> positions = {};
-			std::vector<glm::vec3> normals = {};
-			std::vector<glm::vec2> uvs = {};
+			for (size_t b = 0; b < mesh.vert_indices.size(); b += 3) {
+				Triangle triangle;
 
-			for (int b = 0; b < mesh.vert_indices.size(); b++) {
-				positions.push_back(mesh.vert_positions[mesh.vert_indices[b]] * scale + position);
-				normals.push_back(mesh.vert_normals[mesh.vert_indices[b]]);
-				uvs.push_back(mesh.tex_coords[mesh.vert_indices[b]]);
+				triangle.P1 = glm::vec3(correctionMatrix * glm::vec4(mesh.vert_positions[mesh.vert_indices[b]] * scale + position, 1.0));
+				triangle.P2 = glm::vec3(correctionMatrix * glm::vec4(mesh.vert_positions[mesh.vert_indices[b + 1]] * scale + position, 1.0));
+				triangle.P3 = glm::vec3(correctionMatrix * glm::vec4(mesh.vert_positions[mesh.vert_indices[b + 2]] * scale + position, 1.0));
 
-				if ((b + 1) % 3 == 0) {
-					Triangle triangle;
+				// Also correct normals
+				triangle.NormP1 = glm::mat3(correctionMatrix) * mesh.vert_normals[mesh.vert_indices[b]];
+				triangle.NormP2 = glm::mat3(correctionMatrix) * mesh.vert_normals[mesh.vert_indices[b + 1]];
+				triangle.NormP3 = glm::mat3(correctionMatrix) * mesh.vert_normals[mesh.vert_indices[b + 2]];
 
-					triangle.P1 = positions[0];
-					triangle.P2 = positions[1];
-					triangle.P3 = positions[2];
+				triangle.UVP1 = mesh.tex_coords[mesh.vert_indices[b]];
+				triangle.UVP2 = mesh.tex_coords[mesh.vert_indices[b + 1]];
+				triangle.UVP3 = mesh.tex_coords[mesh.vert_indices[b + 2]];
 
-					triangle.NormP1 = normals[0];
-					triangle.NormP2 = normals[1];
-					triangle.NormP3 = normals[2];
-
-
-					triangle.UVP1 = uvs[0];
-					triangle.UVP2 = uvs[1];
-					triangle.UVP3 = uvs[2];
-
-					meshTriangles.push_back(triangle);
-
-					positions.clear();
-					normals.clear();
-					uvs.clear();
-				}
+				meshTriangles.push_back(triangle);
 			}
 
 			Material meshMat = material;
 			aiMaterial* aiMat = scene->mMaterials[scene->mMeshes[a]->mMaterialIndex];
-			ExtractPBRProperties(aiMat, meshMat);
+			if(!overrideMap)
+				meshMat = ExtractPBRProperties(aiMat, meshMat);
 
-			allTriangles.insert(allTriangles.end(), meshTriangles.begin(), meshTriangles.end());
-
-			if (mesh.tex_handle != 0)
-			{
-				meshMat.textureSlot = a;
+			// Now assign correct texture slot using hashmap lookup
+			if (mesh.tex_handle != 0) {
+				meshMat.textureSlot = texHandleToLayer[mesh.tex_handle];
+			}
+			else {
+				meshMat.textureSlot = -1;  // No texture
 			}
 
-			bvh.AddModel(meshTriangles, meshMat);
+			bvh.AddModel(meshTriangles, meshMat, hasNorm);
+			allTriangles.insert(allTriangles.end(), meshTriangles.begin(), meshTriangles.end());
 		}
 
+		// Bind your texture array for shader use
 		glActiveTexture(GL_TEXTURE0 + MODEL_ACTIVE_TEXTURE_OFFSET);
 		glBindTexture(GL_TEXTURE_2D_ARRAY, textureArray);
 		shader.Activate();

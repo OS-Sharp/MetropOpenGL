@@ -64,9 +64,11 @@ struct alignas(16) BVHNode {
 
 // BVH Model Struct
 struct alignas(16) BVHModel {
+    Material material;
     int NodeOffset;
     int TriangleOffset;
-    Material material;
+    float HasNorm;
+    float padding;
 };
 
 // BVH Class with SAH splitting and separate ChooseSplit function.
@@ -97,7 +99,7 @@ public:
         AddModel(triangles, material);
     }
 
-    BVHModel AddModel(std::vector<Triangle>& triangles, Material material) {
+    BVHModel AddModel(std::vector<Triangle>& triangles, Material material, bool HasNorm = true) {
         auto Root = std::make_unique<BVHNode>();
 
         int triOffset = Triangles.size();
@@ -123,6 +125,7 @@ public:
         model.TriangleOffset = triOffset;
         model.NodeOffset = nodeOffset;
         model.material = material;
+        model.HasNorm = HasNorm ? 1 : 0;
 
         FlatNodes = MoveToFlatNodes(Nodes);
         Models.push_back(model);

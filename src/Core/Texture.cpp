@@ -107,7 +107,7 @@ Texture::Texture(GLuint width, GLuint height, GLuint slot, GLuint binding, GLenu
 	glActiveTexture(GL_TEXTURE0 + 15);
 }
 
-void Texture::texUnit(Shader& shader, const char* uniform, GLuint unit)
+void Texture::texUnit(Shader& shader, const char* uniform)
 {
 	// Gets the location of the uniform
 	GLuint texUni = glGetUniformLocation(shader.ID, uniform);

@@ -7,6 +7,7 @@ in vec3 normal;
 uniform sampler2D tex0;
 uniform sampler2D tex1;
 uniform sampler2D tex2;
+uniform sampler2D diffuseTextures;
 
 uniform int Frame;
 
@@ -25,6 +26,7 @@ void main() {
     vec3 gamma = ACESFilm(color0.rgb);
     gamma = LinearToInverseGamma(gamma.rgb, 2.4);
 
+    vec4 tex = texture(diffuseTextures, texCoord);
     //FragColor = vec4(c,c,c,1);
     FragColor = vec4(gamma.rgb,1);
 }

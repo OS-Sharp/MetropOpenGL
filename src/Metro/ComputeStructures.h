@@ -9,28 +9,49 @@
 #include <vector>
 #include <limits>
 
+struct EmissiveObjectData {
+    alignas(16) glm::vec3 position;   // Center position (for sphere) or barycenter (for triangle)
+    float radius;         // Radius for sphere, or area for triangle
+    alignas(16) glm::vec3 normal;     // Normal direction (for triangles, unused for spheres)
+    float type;           // 0 = sphere, 1 = triangle
+    int objectIndex;      // Index into original array (spheres or triangles)
+    float power;          // Total emissive power (used for importance sampling)
+    alignas(16) glm::vec3 emission;   // Emission color
+    float padding;        // For alignment
+};
+
+struct EmissivePowerInfo {
+    float totalEmissivePower;
+    int numEmissiveObjects;
+    glm::vec2 padding;
+};
+
 //-----------------------------------------------------------------------------
 // Material
 //-----------------------------------------------------------------------------
 // Represents the properties of a surface material used in shading calculations.
 // Each member is aligned to 16 bytes for compatibility with GPU data layouts.
 struct alignas(16) Material {
-    // Intensity of the light the material emits.
-    alignas(16) glm::vec3 emmisionStrength;
     // Color of the light the material emits.
     alignas(16) glm::vec3 emmisionColor;
+    // Intensity of the light the material emits.
+    float emmisionStrength;
     // Base color of the material (diffuse reflectance).
     alignas(16) glm::vec3 diffuseColor;
     // Smoothness factor, influencing specular reflection.
-    alignas(16) glm::vec3 smoothness;
-    // The probability that the material reflects specularly.
-    alignas(16) glm::vec3 specularChance = glm::vec3(0, 0, 0);
+    float smoothness;
     // Color of specular reflection.
     alignas(16) glm::vec3 specularColor = glm::vec3(1, 1, 1);
+    // The probability that the material reflects specularly.
+    float specularChance;
+
     // Opacity of the material (1.0 means fully opaque).
-    alignas(16) glm::vec3 opacity = glm::vec3(1, 1, 1);
     // Texture slot index into a texture array. -1 indicates no texture.
     GLuint textureSlot = -1;
+    // Refractive index for translucent materials (e.g., 1.0 for air, 1.33 for water, 1.5 for glass)
+    float refractiveIndex = 1.0f;
+    // Whether this material is translucent (glass, water, etc.)
+    GLuint isTranslucent = 0;
 };
 
 //-----------------------------------------------------------------------------

@@ -34,14 +34,18 @@ public:
 
     GLUTText text;
 
-    int Frame = 0;
+    double Frame = 0;
 
     void AddSurfaces();
     void AddMeshes();
+    void SetupEmissiveObjectsBuffer(const std::vector<TraceCircle> circles);
+
+    bool SaveScreenshot(double timeInSeconds);
+    std::chrono::time_point<std::chrono::steady_clock> lastScreenshotTime;
+    const float ScreenshotFrequency = 60;
 
     void OnBufferSwap(Window& win) override;
     void OnWindowLoad(Window& win) override;
     void OnWindowClose(Window& win) override;
-
     RayScene(Window& win);
 };

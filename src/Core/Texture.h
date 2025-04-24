@@ -17,7 +17,7 @@ public:
 	Texture(GLuint width, GLuint height, GLuint slot, GLuint binding, GLenum access = GL_READ_WRITE, GLenum format = GL_RGBA32F);
 
 	// Assigns a texture unit to a texture
-	void texUnit(Shader& shader, const char* uniform, GLuint unit);
+	void texUnit(Shader& shader, const char* uniform);
 	// Binds a texture
 	void Bind();
 	// Unbinds a texture
