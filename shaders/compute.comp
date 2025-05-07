@@ -2,9 +2,9 @@
 #extension GL_EXT_shader_image_load_store : enable
 #define M_PI 3.14159265358979323846
 
-//#define RENDER_MODE_0 //PATH TRACING
+#define RENDER_MODE_0 //PATH TRACING
 //#define RENDER_MODE_1 //METROPLIS
-#define RENDER_MODE_2 //BIDIRECTIONAL
+//#define RENDER_MODE_2 //BIDIRECTIONAL
 //#define RENDER_MODE_3 // NEXT EVENT ESTIMATION (NEE)
 
 /******************************************************************************
@@ -247,6 +247,8 @@ uniform int DebugMode = 0;          // Debug mode (0: normal, 1: debug view)
 uniform int DebugThreshold = 20;
 uniform int DebugTest = 0;
 uniform int RENDER_MODE = 0;
+uniform int LENSSUBPATHS = 6;
+uniform int LIGHTSUBPATHS = 6;
 
 uniform int MutationType = 1;       // 0 = small perturbation, 1 = lens perturbation
 uniform int NumberOfMutations = 1;       // 0 = small perturbation, 1 = lens perturbation
@@ -357,14 +359,24 @@ double rand(inout vec2 co) {
 
 vec3 CosineSampleHemisphere(vec3 normal, inout vec2 co)
 {
-    double z = rand(co) * 2.0 - 1.0;
-    double a = rand(co) * 2.0 * M_PI;
-    double r = sqrt(1.0 - z * z);
-    double x = r * cos(float(a));
-    double y = r * sin(float(a));
-
-    // Convert unit vector in sphere to a cosine weighted vector in hemisphere
-    return normalize(normal + vec3(x, y, z));
+   // Use floats instead of doubles for better GPU performance
+    float r1 = float(rand(co));
+    float r2 = float(rand(co));
+    
+    // Compute cosine-weighted sample in local space
+    float phi = 2.0 * M_PI * r1;
+    float r_sqrt = sqrt(r2);
+    float x = r_sqrt * cos(phi);
+    float y = r_sqrt * sin(phi);
+    float z = sqrt(1.0 - r2);  // sqrt(1 - x²-y²) = sqrt(1-r²)
+    
+    // Create an orthonormal basis (tangent, bitangent, normal)
+    vec3 helper = abs(normal.x) > 0.99 ? vec3(0, 1, 0) : vec3(1, 0, 0);
+    vec3 tangent = normalize(cross(helper, normal));
+    vec3 bitangent = cross(normal, tangent);
+    
+    // Transform sampled direction to world space
+    return tangent * x + bitangent * y + normal * z;
 }
 
 // Generate a normally distributed random value.
@@ -826,20 +838,22 @@ vec3 FullTrace(Ray ray, inout vec2 state) {
 
     for (int i = 0; i < NumberOfBounces; i++) {
         HitInfo hitInfo;
-        //hitInfo.albedo = vec3(1.0);
         hitInfo.didHit = false;
-        hitInfo.dst = 1e20;
+        hitInfo.dst = 1e20;  // Initialize with "infinity"
 
+        // Test spheres first since they're typically faster
         HitInfo hitInfoSphere = RayAllSpheres(ray);
-        HitInfo hitInfoMesh = RayAllBVHMeshes(ray, tests);
-        //HitInfo hitInfoBox = RayAllBoxes(ray);
-
-        if (hitInfoSphere.didHit)
+        if (hitInfoSphere.didHit) {
             hitInfo = hitInfoSphere;
-        if (hitInfoMesh.didHit && hitInfoMesh.dst < hitInfo.dst)
-            hitInfo = hitInfoMesh;
-        //if (hitInfoBox.didHit && hitInfoBox.dst < hitInfo.dst)
-        //    hitInfo = hitInfoBox;
+        }
+
+        // Only test BVH if we need to (spheres didn't hit or hit something far away)
+        if (!hitInfo.didHit || hitInfo.dst > 1) {
+            HitInfo hitInfoMesh = RayAllBVHMeshes(ray, tests);
+            if (hitInfoMesh.didHit && hitInfoMesh.dst < hitInfo.dst) {
+                hitInfo = hitInfoMesh;
+            }
+        }
 
         if (hitInfo.didHit) {
             vec3 emission = hitInfo.material.emmisionColor * hitInfo.material.emmisionStrength.x;
@@ -926,329 +940,6 @@ vec3 FullTrace(Ray ray, inout vec2 state) {
 
 #define RENDER_MODE_3 // NEXT EVENT ESTIMATION (NEE)
 
-/******************************************************************************
-╔════════════════════════════════════════════════════════════════════════════╗
-║               NEXT EVENT ESTIMATION (NEE) COMPUTE SHADER                   ║
-║                                                                            ║
-║ This shader implements a Next Event Estimation algorithm for path tracing  ║
-║ that explicitly samples light sources at each bounce to reduce variance.   ║
-║                                                                            ║
-║ Key features:                                                              ║
-║   - Explicit light sampling at each bounce                                 ║
-║   - Multiple Importance Sampling (MIS) for optimal combination of          ║
-║     BRDF sampling and light sampling                                       ║
-║   - Support for both direct and indirect illumination                      ║
-║   - Handling of specular materials that cannot be directly sampled         ║
-║   - Russian roulette path termination for efficiency                       ║
-╚════════════════════════════════════════════════════════════════════════════╝
-********************************************************************************/
-
-///////////////////////////////
-//    LIGHT SAMPLING HELPERS //
-///////////////////////////////
-
-// Sample a point on a sphere light source
-vec3 SampleSphereLight(Sphere light, inout vec2 state, out vec3 normal, out float pdf) {
-    // Sample a random point on the sphere
-    double u = rand(state);
-    double v = rand(state);
-    double theta = 2.0 * M_PI * u;
-    float phi = acos(float(2.0 * v - 1.0));
-    
-    // Convert to Cartesian coordinates
-    float r = light.radius.x;
-    vec3 localPoint = vec3(
-        r * sin(float(phi)) * cos(float(theta)),
-        r * cos(float(phi)),
-        r * sin(float(phi)) * sin(float(theta))
-    );
-    
-    // Surface normal at the sampled point
-    normal = normalize(localPoint);
-    
-    // PDF = 1 / (surface area of sphere)
-    pdf = 1.0 / (4.0 * M_PI * r * r);
-    
-    // Return world space position
-    return light.position + localPoint;
-}
-
-// Check if a point is visible from another point
-bool IsVisible(vec3 origin, vec3 target) {
-    vec3 direction = target - origin;
-    float maxDist = length(direction);
-    direction = normalize(direction);
-    
-    Ray shadowRay;
-    shadowRay.origin = origin + direction * 1e-4; // Offset to avoid self-intersection
-    shadowRay.direction = direction;
-    
-    // Check spheres first (usually fewer objects)
-    for (int i = 0; i < NumSpheres; i++) {
-        Sphere sphere = spheres[i];
-        // Skip if translucent (simplified - real implementation would track transmittance)
-        if (sphere.material.isTranslucent == 0) {
-            HitInfo hit = RaySphere(shadowRay, sphere.position, sphere.radius.x, sphere.material);
-            if (hit.didHit && hit.dst < maxDist - 1e-3) {
-                return false;  // Blocked
-            }
-        }
-    }
-    
-    // Check all meshes
-    int tests[NUM_DEBUG_STATS];
-    for (int j = 0; j < NUM_DEBUG_STATS; j++) { 
-        tests[j] = 0; 
-    }
-    
-    for (int i = 0; i < NumModels; i++) {
-        Model model = Models[i];
-        if (model.material.isTranslucent == 0) {
-            // Quick check for bounding box
-            if (RayIntersectsAABB(shadowRay, nodes[model.NodeOffset].minBounds, nodes[model.NodeOffset].maxBounds)) {
-                HitInfo hit = TraverseBVH(shadowRay, model.NodeOffset, model.material, model.HasNorm, tests);
-                if (hit.didHit && hit.dst < maxDist - 1e-3) {
-                    return false;  // Blocked
-                }
-            }
-        }
-    }
-    
-    return true;  // Not blocked
-}
-
-// Multiple Importance Sampling weight calculation (balance heuristic)
-float BalanceMIS(float pdf_a, float pdf_b) {
-    if (pdf_a <= 0.0 || pdf_b <= 0.0) return 1.0;
-    return pdf_a / (pdf_a + pdf_b);
-}
-
-// Power heuristic for MIS (often provides better results than balance heuristic)
-float PowerMIS(float pdf_a, float pdf_b) {
-    if (pdf_a <= 0.0 || pdf_b <= 0.0) return 1.0;
-    float a = pdf_a * pdf_a;
-    float b = pdf_b * pdf_b;
-    return a / (a + b);
-}
-
-// Calculate the PDF for sampling direction via BRDF
-float BRDFPdf(vec3 normal, vec3 wi, Material material) {
-    // For diffuse BRDF (cosine-weighted sampling)
-    if (material.specularProbability.x < 0.01) {
-        return max(0.0, dot(normal, wi)) / M_PI;
-    }
-    
-    // For glossy materials, this would be a more complex function
-    // This is a simplified version
-    float specularProb = material.specularProbability.x;
-    float diffuseProb = 1.0 - specularProb;
-    
-    // Approximate PDF as mixture of diffuse and specular
-    return diffuseProb * max(0.0, dot(normal, wi)) / M_PI + 
-           specularProb * pow(max(0.0, dot(reflect(-wi, normal), wi)), material.smoothness.x * 50.0);
-}
-
-// Calculate direct illumination contribution using NEE
-vec3 SampleDirectLight(HitInfo hitInfo, vec3 wo, inout vec2 state) {
-    vec3 directLight = vec3(0.0);
-    
-    // Skip NEE for perfect specular/mirror surfaces
-    if (hitInfo.material.specularProbability.x > 0.999 && hitInfo.material.smoothness.x > 0.999) {
-        return directLight;
-    }
-    
-    // Sample each light source
-    for (int i = 0; i < NumSpheres; i++) {
-        Sphere sphere = spheres[i];
-        
-        // Check if this is an emissive sphere (light source)
-        if (sphere.material.emmisionStrength > 0.01) {
-            // Sample a point on the light
-            vec3 lightNormal;
-            float lightPdf;
-            vec3 lightPos = SampleSphereLight(sphere, state, lightNormal, lightPdf);
-            
-            // Calculate direction to sampled point
-            vec3 wi = normalize(lightPos - hitInfo.hitPoint);
-            
-            // Reject samples on the wrong hemisphere
-            if (dot(wi, hitInfo.normal) <= 0.0) {
-                continue;
-            }
-            
-            // Check visibility 
-            if (IsVisible(hitInfo.hitPoint, lightPos)) {
-                // Calculate geometric terms
-                float dist = length(lightPos - hitInfo.hitPoint);
-                float distSquared = dist * dist;
-                float cosLight = max(0.0, dot(-wi, lightNormal));
-                float cosHit = max(0.0, dot(wi, hitInfo.normal));
-                
-                // Convert area PDF to solid angle PDF
-                float solidAnglePdf = lightPdf * distSquared / cosLight;
-                
-                // Skip invalid samples
-                if (solidAnglePdf <= 0.0 || cosLight <= 0.0) {
-                    continue;
-                }
-                
-                // Evaluate BRDF
-                vec3 brdf;
-                if (hitInfo.material.specularProbability.x > 0.01) {
-                    // Handle specular component
-                    vec3 reflectDir = reflect(-wo, hitInfo.normal);
-                    float specDot = max(0.0, dot(reflectDir, wi));
-                    float specFactor = pow(specDot, hitInfo.material.smoothness.x * 50.0);
-                    brdf = mix(
-                        hitInfo.material.diffuseColor / M_PI,
-                        hitInfo.material.specularColor,
-                        hitInfo.material.specularProbability.x * specFactor
-                    );
-                } else {
-                    // Simple diffuse
-                    brdf = hitInfo.material.diffuseColor / M_PI;
-                }
-                
-                // Calculate BRDF sampling PDF for this direction (for MIS)
-                float brdfPdf = BRDFPdf(hitInfo.normal, wi, hitInfo.material);
-                
-                // Calculate MIS weight
-                float misWeight = PowerMIS(solidAnglePdf, brdfPdf);
-                
-                // Compute direct lighting contribution
-                vec3 emission = sphere.material.emmisionColor * sphere.material.emmisionStrength;
-                directLight += brdf * emission * cosHit * misWeight / solidAnglePdf;
-            }
-        }
-    }
-    
-    return directLight;
-}
-
-// Next Event Estimation (NEE) Path Tracing implementation
-vec3 NEETrace(Ray ray, inout vec2 state) {
-    vec3 radiance = vec3(0.0);
-    vec3 throughput = vec3(1.0);
-    bool specularBounce = false;
-    
-    for (int depth = 0; depth < NumberOfBounces; depth++) {
-        // Intersect with scene
-        int tests[NUM_DEBUG_STATS];
-        for (int j = 0; j < NUM_DEBUG_STATS; j++) { 
-            tests[j] = 0; 
-        }
-        
-        HitInfo hitInfo;
-        hitInfo.didHit = false;
-        hitInfo.dst = 1e20;
-        
-        HitInfo hitInfoSphere = RayAllSpheres(ray);
-        HitInfo hitInfoMesh = RayAllBVHMeshes(ray, tests);
-        
-        // Find closest hit
-        if (hitInfoSphere.didHit)
-            hitInfo = hitInfoSphere;
-        if (hitInfoMesh.didHit && hitInfoMesh.dst < hitInfo.dst)
-            hitInfo = hitInfoMesh;
-            
-        // If no hit, add background/environment contribution
-        if (!hitInfo.didHit) {
-            radiance += throughput * GetAmbientLight(ray) * SkyStrength;
-            break;
-        }
-        
-        // If we hit a light source directly, add emission (but only for camera rays or specular bounces)
-        vec3 emission = hitInfo.material.emmisionColor * hitInfo.material.emmisionStrength;
-        if (any(greaterThan(emission, vec3(0.001))) && (depth == 0 || specularBounce)) {
-            radiance += throughput * emission;
-            break;
-        }
-        
-        // Skip NEE for translucent materials (would require custom handling)
-        if (hitInfo.material.isTranslucent == 1) {
-            // Handle translucent materials with existing code
-            bool entering = dot(ray.direction, hitInfo.normal) < 0.0;
-            vec3 surfaceNormal = entering ? hitInfo.normal : -hitInfo.normal;
-            
-            float n1 = entering ? 1.0 : hitInfo.material.refractiveIndex;
-            float n2 = entering ? hitInfo.material.refractiveIndex : 1.0;
-            float eta = n1 / n2;
-            
-            float cosTheta = abs(dot(-ray.direction, surfaceNormal));
-            float reflectionCoeff = SchlickApproximation(cosTheta, eta);
-            
-            if (rand(state) < reflectionCoeff) {
-                // Reflect
-                ray.direction = reflect(ray.direction, surfaceNormal);
-                throughput *= hitInfo.material.specularColor;
-                specularBounce = true;
-            } else {
-                // Refract
-                ray.direction = Refract(ray.direction, surfaceNormal, eta);
-                specularBounce = true;
-                
-                // Apply absorption based on distance traveled
-                if (entering) {
-                    throughput *= hitInfo.material.diffuseColor;
-                }
-                // Optional absorption when exiting could be added here
-            }
-            
-            ray.origin = hitInfo.hitPoint + ray.direction * 1e-4;
-            continue;
-        }
-        
-        // Next Event Estimation - sample direct illumination
-        if (depth < NumberOfBounces - 1) {  // Skip on last bounce for efficiency
-            vec3 directIllumination = SampleDirectLight(hitInfo, -ray.direction, state);
-            radiance += throughput * directIllumination;
-        }
-        
-        // Sample BRDF for indirect illumination
-        vec3 wo = -ray.direction;
-        vec3 diffuseDir = CosineSampleHemisphere(hitInfo.normal, state);
-        vec3 specularDir = reflect(ray.direction, hitInfo.normal);
-        
-        // Probabilistically select diffuse or specular
-        bool useSpecular = hitInfo.material.specularProbability.x >= rand(state);
-        vec3 wi = mix(diffuseDir, specularDir, hitInfo.material.smoothness.x * float(useSpecular));
-        
-        // Calculate BRDF and PDF
-        vec3 brdf;
-        float pdf;
-        
-        if (useSpecular) {
-            brdf = hitInfo.material.specularColor;
-            pdf = hitInfo.material.specularProbability.x;
-            specularBounce = (hitInfo.material.smoothness.x > 0.9);  // Only count as specular if smooth enough
-        } else {
-            brdf = hitInfo.material.diffuseColor * hitInfo.albedo / M_PI;
-            pdf = (1.0 - hitInfo.material.specularProbability.x) * max(0.0, dot(wi, hitInfo.normal)) / M_PI;
-            specularBounce = false;
-        }
-        
-        // Update throughput
-        float cosine = max(0.0, dot(wi, hitInfo.normal));
-        throughput *= brdf * cosine / max(0.0001, pdf);
-        
-        // Russian roulette for path termination
-        if (depth > 2) {
-            float p = max(throughput.r, max(throughput.g, throughput.b));
-            if (rand(state) >= p) {
-                break;
-            }
-            throughput /= p;  // Compensate for termination probability
-        }
-        
-        // Setup next ray
-        ray.origin = hitInfo.hitPoint + wi * 1e-4;
-        ray.direction = wi;
-        
-        // MIS for light-hit by BRDF sample (handled in next iteration when checking for direct light hits)
-    }
-    
-    return radiance;
-}
 
 ////////////////////////////////////////////////////////////////////////////////
 //                                                                            //
@@ -1274,7 +965,7 @@ struct Vertex {
     int objType;
     vec3 throughput; // Cumulative product of BSDF, cosine, etc.
     float PDF;
-    vec3 emmision;
+    vec3 emission;
 };
 
 
@@ -1290,10 +981,17 @@ struct EmissiveObject {
     float padding;      // For alignment
 };
 
-//======================================================================
-// Path Storage Buffer Objects
-//======================================================================
-// Binding 21: Global buffer storing camera path vertices for all threads
+// Structure to store the result of a path trace (end vertex and throughput)
+struct PathResult {
+    vec3 position;     // Final vertex position
+    int objIndex;      // Object index of the final hit
+    vec3 normal;       // Surface normal at final vertex
+    int objType;       // Object type of the final hit
+    vec3 throughput;   // Accumulated path throughput
+    bool isEmissive;   // Whether the final vertex is emissive
+    vec3 emission;     // Emission at the final vertex (if emissive)
+};
+
 layout(std430, binding = 21) buffer CameraPathBuffer {
     Vertex cameraPathsGlobal[];
 };
@@ -1358,44 +1056,59 @@ Material VertexMat(Vertex v){
     return GetMaterial(v.objIndex, v.objType);
 }
 
-int BuildCameraPathSSBO(int baseIndex, int t, inout vec2 seed, vec3 initDirUV) {
+// Generates a camera path and returns the result
+int TraceCameraPath(vec3 rayDirection, int maxBounces, int baseIndex, inout vec2 seed) {
     Ray ray;
     ray.origin = camera.position;
-    ray.direction = initDirUV;
+    ray.direction = rayDirection;
 
     // The initial throughput is unity
     vec3 throughput = vec3(1.0);
+    bool hitEmissive = false;
+    vec3 emission = vec3(0.0);
     float PDF = 1.0;
-
-    int count = 0;
-
-    // Initialize the camera vertex (index 0)
-    cameraPathsGlobal[baseIndex].position = camera.position;
-    cameraPathsGlobal[baseIndex].throughput = throughput;
-    cameraPathsGlobal[baseIndex].PDF = PDF;
-    count++;
-
+  
+    // Used for BVH traversal
     int tests[NUM_DEBUG_STATS];
     for (int j = 0; j < NUM_DEBUG_STATS; j++) { 
         tests[j] = 0; 
     }
 
-    // Trace the path for t-1 bounces (or until no hit)
-    for (int i = 0; i < t-1 && count < MAX_PATH_LENGTH; i++) {
-        // Compute intersections
+    // Maximum bounces to simulate
+    cameraPathsGlobal[baseIndex].position = camera.position;
+    cameraPathsGlobal[baseIndex].throughput = throughput;
+    cameraPathsGlobal[baseIndex].PDF = PDF;
+    cameraPathsGlobal[baseIndex].emission = emission;
+
+    int count = 0;
+    count++;
+
+    // Trace the path
+    for (int bounce = 0; bounce < maxBounces; bounce++) {
+
+        int vertexIndex = baseIndex + count;
+
+        HitInfo hitInfo;
+        hitInfo.didHit = false;
+        hitInfo.dst = 1e20;  // Initialize with "infinity"
+
+        // Test spheres first since they're typically faster
         HitInfo hitInfoSphere = RayAllSpheres(ray);
-        HitInfo hitInfoMesh = RayAllBVHMeshes(ray, tests);
-        
-        HitInfo hitInfo = hitInfoSphere;
-        if (hitInfoMesh.didHit && hitInfoMesh.dst < hitInfo.dst) {
-            hitInfo = hitInfoMesh;
+        if (hitInfoSphere.didHit) {
+            hitInfo = hitInfoSphere;
+        }
+
+        // Only test BVH if we need to (spheres didn't hit or hit something far away)
+        if (!hitInfo.didHit || hitInfo.dst > 1) {
+            HitInfo hitInfoMesh = RayAllBVHMeshes(ray, tests);
+            if (hitInfoMesh.didHit && hitInfoMesh.dst < hitInfo.dst) {
+                hitInfo = hitInfoMesh;
+            }
         }
         
-        // If no intersection, add a vertex for the sky and terminate
+        // If no intersection, simulate sky hit
         if (!hitInfo.didHit) {
-            int vertexIndex = baseIndex + count;
-            
-            // Create a virtual sky vertex at a far distance
+
             cameraPathsGlobal[vertexIndex].position = ray.origin + ray.direction * 100000.0;
             cameraPathsGlobal[vertexIndex].normal = -ray.direction; // Use incoming direction as normal
             
@@ -1403,119 +1116,122 @@ int BuildCameraPathSSBO(int baseIndex, int t, inout vec2 seed, vec3 initDirUV) {
             cameraPathsGlobal[vertexIndex].PDF = PDF;
             cameraPathsGlobal[vertexIndex].objType = -1;
             cameraPathsGlobal[vertexIndex].objIndex = -1;
+            cameraPathsGlobal[vertexIndex].emission = emission + GetAmbientLight(ray) * SkyStrength * throughput;
 
             count++;
-            break;
+
+            return count;
         }
 
-        // Store the vertex information in the global buffer
-        int vertexIndex = baseIndex + count;
-        cameraPathsGlobal[vertexIndex].position = hitInfo.hitPoint;
-        cameraPathsGlobal[vertexIndex].normal = hitInfo.normal;
-        cameraPathsGlobal[vertexIndex].throughput = throughput;
-        cameraPathsGlobal[vertexIndex].PDF = PDF;
-        cameraPathsGlobal[vertexIndex].objIndex = hitInfo.objIndex;
-        cameraPathsGlobal[vertexIndex].objType = hitInfo.type;
-
-        count++;
-        
-        // Check if we've reached an emissive surface
-        if (hitInfo.material.emmisionStrength.x > 0) {
-            break;
-            cameraPathsGlobal[vertexIndex].emmision = 
-                hitInfo.material.emmisionColor * hitInfo.material.emmisionStrength;
-        }
-        
         // Handle different material types and scattering events
         vec3 newDir;
         bool isSpecular = false;
         
+        
+  
+        // Check if we've reached an emissive surface
+        if (hitInfo.material.emmisionStrength.x > 0) {
+            emission += hitInfo.material.emmisionColor * hitInfo.material.emmisionStrength * throughput;
+            //return count;
+        }
+
         // Handle translucent materials with refraction
         if (hitInfo.material.isTranslucent == 1) {
             // Determine if ray is entering or exiting the medium
             bool entering = dot(ray.direction, hitInfo.normal) < 0.0;
             vec3 surfaceNormal = entering ? hitInfo.normal : -hitInfo.normal;
             
-            // Adjust refractive indices based on whether we're entering or exiting
+            // Adjust refractive indices
             float n1 = entering ? 1.0 : hitInfo.material.refractiveIndex;
             float n2 = entering ? hitInfo.material.refractiveIndex : 1.0;
             float eta = n1 / n2;
             
-            // Calculate Fresnel reflection coefficient using Schlick's approximation
+            // Calculate Fresnel reflection coefficient
             float cosTheta = abs(dot(-ray.direction, surfaceNormal));
             float reflectionCoeff = SchlickApproximation(cosTheta, eta);
             
-            // Probabilistic reflection/refraction based on Fresnel
+            // Probabilistic reflection/refraction
             if (rand(seed) < reflectionCoeff) {
                 // Reflect
                 newDir = reflect(ray.direction, surfaceNormal);
                 isSpecular = true;
-                
                 throughput *= hitInfo.material.specularColor;
-                PDF = reflectionCoeff;  // PDF is the probability of choosing reflection
             } else {
                 // Refract
                 newDir = Refract(ray.direction, surfaceNormal, eta);
-                isSpecular = true;  // Refraction is also a specular event
+                isSpecular = true;
                 
-                // Apply absorption based on distance traveled through medium
+                // Apply absorption based on distance traveled
                 if (entering) {
-                    // No absorption when entering, apply color when exiting
                     throughput *= hitInfo.material.diffuseColor;
-                } else {
-                    // Optional: Apply Beer's law for absorption when exiting
-                    // float distanceThroughMedium = hitInfo.dst;
-                    // vec3 absorption = exp(-hitInfo.material.absorptionCoefficient * distanceThroughMedium);
-                    // throughput *= absorption;
                 }
-                PDF = 1.0 - reflectionCoeff;  // PDF is the probability of choosing refraction
             }
         } else {
-            // Handle regular opaque materials with diffuse/specular
+            // Handle regular opaque materials
             vec3 diffuseDir = CosineSampleHemisphere(hitInfo.normal, seed);
             vec3 specularDir = reflect(ray.direction, hitInfo.normal);
             isSpecular = hitInfo.material.specularProbability.x >= rand(seed);
             
             newDir = mix(diffuseDir, specularDir, hitInfo.material.smoothness.x * float(isSpecular));
             
-            // Calculate the PDF for this scatter event
-            float scatterPDF;
-            if (isSpecular) {
-                scatterPDF = hitInfo.material.specularProbability.x;
-            } else {
-                scatterPDF = max(0.0, dot(newDir, hitInfo.normal)) / M_PI;
-            }
-            
-            PDF = scatterPDF;
-            
             // Update throughput based on the BRDF
             vec3 effectiveDiffuse = hitInfo.material.diffuseColor * hitInfo.albedo;
             throughput *= mix(effectiveDiffuse, hitInfo.material.specularColor, float(isSpecular)) 
-                         * max(0.0, dot(newDir, hitInfo.normal));
+                        * max(0.0, dot(newDir, hitInfo.normal));
         }
         
+
         // Russian roulette for path termination
         float p = max(throughput.r, max(throughput.g, throughput.b));
-        if (i > 2 && rand(seed) >= p) {
-            break;
+        if (bounce > 2 && rand(seed) >= p) {
+            // Path terminated by Russian roulette
+            cameraPathsGlobal[vertexIndex].position = hitInfo.hitPoint;
+            cameraPathsGlobal[vertexIndex].normal = hitInfo.normal;
+            cameraPathsGlobal[vertexIndex].throughput = throughput;
+            cameraPathsGlobal[vertexIndex].PDF = PDF;
+            cameraPathsGlobal[vertexIndex].objIndex = hitInfo.objIndex;
+            cameraPathsGlobal[vertexIndex].objType = hitInfo.type;
+            cameraPathsGlobal[vertexIndex].emission = emission;
+            count++;
+
+            return count;
         }
-        
-        if (p > 0.0) {
-            //throughput /= p;
+
+        if (bounce > 2 && p > 0.0) {
+            throughput /= p; // Compensate for termination probability
         }
-        
+
+        cameraPathsGlobal[vertexIndex].position = hitInfo.hitPoint;
+        cameraPathsGlobal[vertexIndex].normal = hitInfo.normal;
+        cameraPathsGlobal[vertexIndex].throughput = throughput;
+        cameraPathsGlobal[vertexIndex].PDF = PDF;
+        cameraPathsGlobal[vertexIndex].objIndex = hitInfo.objIndex;
+        cameraPathsGlobal[vertexIndex].objType = hitInfo.type;
+        cameraPathsGlobal[vertexIndex].emission = emission;
+
+
+        count++;
         // Spawn the next ray
         ray.origin = hitInfo.hitPoint + newDir * 1e-4;
         ray.direction = newDir;
+
+
     }
     
+    // Return the final vertex
     return count;
 }
 
-int BuildLightPathSSBO(int baseIndex, int s, inout vec2 seed) {
+// Generates a light path and returns the result
+int TraceLightPath(inout vec2 seed, int maxBounces, int baseIndex) {
+    PathResult result;
     int count = 0;
     
-    // First determine whether to sample from a sky/environment light or a scene light
+    // Initialize with invalid result
+    result.throughput = vec3(0.0);
+    result.isEmissive = false;
+    
+    // First determine whether to sample from sky/environment or scene light
     bool sampleSky = (SkyStrength > 0.01) && (rand(seed) < 0.3);
     
     if (sampleSky) {
@@ -1533,32 +1249,34 @@ int BuildLightPathSSBO(int baseIndex, int s, inout vec2 seed) {
         );
         
         // Create a virtual sky vertex far away
-        vec3 skyPos = camera.position + skyDir * 100000.0;
+        result.position = camera.position + skyDir * 100000.0;
+        result.normal = -skyDir;
         
-        // Create a sky material
-        Material skyMaterial;
+        // Setup sky material and emission
         Ray skyRay;
         skyRay.origin = camera.position;
         skyRay.direction = skyDir;
         
-        
-        // Store the sky vertex
-        lightPathsGlobal[baseIndex].position = skyPos;
+        result.throughput = GetAmbientLight(skyRay) * SkyStrength;
+        result.objIndex = -1;
+        result.objType = -1;
+        result.isEmissive = true;
+        result.emission = result.throughput;
+         // Store the sky vertex
+        lightPathsGlobal[baseIndex].position = camera.position + skyDir * 100000.0;
         lightPathsGlobal[baseIndex].normal = -skyDir;
-        lightPathsGlobal[baseIndex].throughput = skyMaterial.emmisionColor * skyMaterial.emmisionStrength;
+        lightPathsGlobal[baseIndex].throughput =  GetAmbientLight(skyRay) * SkyStrength;
         lightPathsGlobal[baseIndex].PDF = 1.0 / (4.0 * M_PI); // Uniform sampling over sphere
         lightPathsGlobal[baseIndex].objType = -1;
-        lightPathsGlobal[baseIndex].objIndex = -1;
-
-        count++;
-        
-        // Sky vertices don't continue paths in this implementation
+        lightPathsGlobal[baseIndex].objIndex = -1;   
+        lightPathsGlobal[baseIndex].emission = result.throughput;   
+    
         return count;
     }
     
     // Check if we have any emissive objects
     if (numEmissiveObjects == 0) {
-        return 0;
+        return count; // Invalid result - no light sources
     }
     
     // Sample an emissive object based on relative power
@@ -1606,7 +1324,6 @@ int BuildLightPathSSBO(int baseIndex, int s, inout vec2 seed) {
     }
     else {
         // This is a triangle light
-        // Get the actual triangle from the main triangle buffer
         Triangle tri = Triangles[lightObj.objectIndex];
         
         // Sample a point on triangle using barycentric coordinates
@@ -1621,13 +1338,11 @@ int BuildLightPathSSBO(int baseIndex, int s, inout vec2 seed) {
         // Compute position on triangle
         lightPos = vec3(u * tri.posA + v * tri.posB + w * tri.posC);
         
-        // Compute normal (interpolated or face normal)
+        // Compute normal
         if (lightObj.normal.x != 0.0 || lightObj.normal.y != 0.0 || lightObj.normal.z != 0.0) {
-            // Use the stored face normal
             normal = lightObj.normal;
         } 
         else {
-            // Compute face normal
             vec3 edge1 = tri.posB - tri.posA;
             vec3 edge2 = tri.posC - tri.posA;
             normal = normalize(cross(edge1, edge2));
@@ -1636,6 +1351,15 @@ int BuildLightPathSSBO(int baseIndex, int s, inout vec2 seed) {
         // PDF = 1 / (area of triangle)
         areaPDF = 1.0 / lightObj.radius; // We stored area in the radius field
     }
+    
+    // Set initial light vertex
+    result.position = lightPos;
+    result.normal = normal;
+    result.throughput = lightObj.emission;
+    result.objIndex = lightObj.objectIndex;
+    result.objType = int(lightObj.type);
+    result.isEmissive = true;
+    result.emission = lightObj.emission;
     
     // Initialize the first vertex (light source)
     lightPathsGlobal[baseIndex].position = lightPos;
@@ -1646,20 +1370,19 @@ int BuildLightPathSSBO(int baseIndex, int s, inout vec2 seed) {
     lightPathsGlobal[baseIndex].PDF = areaPDF * lightSelectionPDF;
     lightPathsGlobal[baseIndex].objIndex = lightObj.objectIndex;
     lightPathsGlobal[baseIndex].objType = int(lightObj.type);
+    lightPathsGlobal[baseIndex].emission = lightObj.emission;
 
-    count++;
 
     // Initial direction from light
     vec3 rayDir = CosineSampleHemisphere(normal, seed);
-    float cosineTerm = max(0.0, dot(rayDir, normal));
-    float dirPDF = cosineTerm / M_PI;
     
     Ray ray;
     ray.origin = lightPos + rayDir * 1e-4;
     ray.direction = rayDir;
     
     // Adjust throughput for first bounce
-    vec3 throughput = lightPathsGlobal[baseIndex].throughput / M_PI;
+    vec3 throughput = result.throughput / M_PI;
+    // Maximum bounces to simulate
     
     int tests[NUM_DEBUG_STATS];
     for (int j = 0; j < NUM_DEBUG_STATS; j++) { 
@@ -1667,223 +1390,155 @@ int BuildLightPathSSBO(int baseIndex, int s, inout vec2 seed) {
     }
 
     // Trace the light path
-    for (int i = 0; i < s-1 && count < MAX_PATH_LENGTH; i++) {
+    for (int bounce = 0; bounce < maxBounces; bounce++) {
+
+        int vertexIndex = baseIndex + count;
+
+        HitInfo hitInfo;
+        hitInfo.didHit = false;
+        hitInfo.dst = 1e20;  // Initialize with "infinity"
+
+        // Test spheres first since they're typically faster
         HitInfo hitInfoSphere = RayAllSpheres(ray);
-        HitInfo hitInfoMesh = RayAllBVHMeshes(ray, tests);
-        
-        HitInfo hitInfo = hitInfoSphere;
-        if (hitInfoMesh.didHit && hitInfoMesh.dst < hitInfo.dst) {
-            hitInfo = hitInfoMesh;
+        if (hitInfoSphere.didHit) {
+            hitInfo = hitInfoSphere;
+        }
+
+        // Only test BVH if we need to (spheres didn't hit or hit something far away)
+        if (!hitInfo.didHit || hitInfo.dst > 1) {
+            HitInfo hitInfoMesh = RayAllBVHMeshes(ray, tests);
+            if (hitInfoMesh.didHit && hitInfoMesh.dst < hitInfo.dst) {
+                hitInfo = hitInfoMesh;
+            }
         }
         
         if (!hitInfo.didHit) {
-            break;
-        }
+            // No hit - path terminates
+            //result.throughput = vec3(0.0); // Mark as invalid
+            return count;
+        }    
 
-        // Store the vertex in the global buffer
-        int vertexIndex = baseIndex + count;
-        lightPathsGlobal[vertexIndex].position = hitInfo.hitPoint;
-        lightPathsGlobal[vertexIndex].normal = hitInfo.normal;
-        lightPathsGlobal[vertexIndex].throughput = throughput;
-        lightPathsGlobal[vertexIndex].PDF = dirPDF;
-        lightPathsGlobal[vertexIndex].objIndex = hitInfo.objIndex;
-        lightPathsGlobal[vertexIndex].objType = hitInfo.type;
-
-        count++;
-        Material lMat = VertexMat(lightPathsGlobal[vertexIndex]);
-        // If we hit another light, terminate
-        if (lMat.emmisionStrength.r > 0) {
-            break;
-            lightPathsGlobal[vertexIndex].emmision = 
-                lMat.emmisionColor * lMat.emmisionStrength;
+        if (hitInfo.material.emmisionStrength.x > 0.0) {
+            result.isEmissive = true;
+            result.emission += hitInfo.material.emmisionColor * hitInfo.material.emmisionStrength * throughput;
+            lightPathsGlobal[vertexIndex].emission += hitInfo.material.emmisionColor * hitInfo.material.emmisionStrength * throughput;
         }
         
-        // Handle different material types and scattering events
+        // Handle different material types
         vec3 newDir;
         bool isSpecular = false;
         
         // Handle translucent materials with refraction
         if (hitInfo.material.isTranslucent == 1) {
-            // Determine if ray is entering or exiting the medium
+            // Similar to camera path...
             bool entering = dot(ray.direction, hitInfo.normal) < 0.0;
             vec3 surfaceNormal = entering ? hitInfo.normal : -hitInfo.normal;
             
-            // Adjust refractive indices based on whether we're entering or exiting
             float n1 = entering ? 1.0 : hitInfo.material.refractiveIndex;
             float n2 = entering ? hitInfo.material.refractiveIndex : 1.0;
             float eta = n1 / n2;
             
-            // Calculate Fresnel reflection coefficient using Schlick's approximation
             float cosTheta = abs(dot(-ray.direction, surfaceNormal));
             float reflectionCoeff = SchlickApproximation(cosTheta, eta);
             
-            // Probabilistic reflection/refraction based on Fresnel
             if (rand(seed) < reflectionCoeff) {
                 // Reflect
                 newDir = reflect(ray.direction, surfaceNormal);
                 isSpecular = true;
-                
                 throughput *= hitInfo.material.specularColor;
-                dirPDF = reflectionCoeff;  // PDF is the probability of choosing reflection
             } else {
                 // Refract
                 newDir = Refract(ray.direction, surfaceNormal, eta);
-                isSpecular = true;  // Refraction is also a specular event
+                isSpecular = true;
                 
-                // Apply absorption based on distance traveled through medium
                 if (entering) {
-                    // No absorption when entering, apply color when exiting
                     throughput *= hitInfo.material.diffuseColor;
-                } else {
-                    // Optional: Apply Beer's law for absorption when exiting
-                    // float distanceThroughMedium = hitInfo.dst;
-                    // vec3 absorption = exp(-hitInfo.material.absorptionCoefficient * distanceThroughMedium);
-                    // throughput *= absorption;
                 }
-                dirPDF = 1.0 - reflectionCoeff;  // PDF is the probability of choosing refraction
             }
         } else {
-            // Handle regular opaque materials with diffuse/specular
+            // Handle regular opaque materials
             vec3 diffuseDir = CosineSampleHemisphere(hitInfo.normal, seed);
             vec3 specularDir = reflect(ray.direction, hitInfo.normal);
             isSpecular = hitInfo.material.specularProbability.x >= rand(seed);
             
             newDir = mix(diffuseDir, specularDir, hitInfo.material.smoothness.x * float(isSpecular));
             
-            // Calculate the PDF for this scatter event
-            if (isSpecular) {
-                dirPDF = hitInfo.material.specularProbability.x;
-            } else {
-                dirPDF = max(0.0, dot(newDir, hitInfo.normal)) / M_PI;
-            }
-            
-            // Update throughput for regular materials
+            // Update throughput
             vec3 effectiveDiffuse = hitInfo.material.diffuseColor * hitInfo.albedo;
             throughput *= mix(effectiveDiffuse, hitInfo.material.specularColor, float(isSpecular)) / M_PI;
         }
         
         // Russian roulette
         float p = max(throughput.r, max(throughput.g, throughput.b));
-        if (i > 2 && rand(seed) >= p) {
-            break;
+        if (bounce > 2 && rand(seed) >= p) {
+            // Path terminated by Russian roulette
+            result.throughput = vec3(0.0); // Mark as invalid
+            return count;
+        }
+
+        if (bounce > 2 && p > 0.0) {
+            throughput /= p; // Compensate for termination probability
         }
         
-        if (p > 0.0) {
-            //throughput /= p;
-        }
-        
+
         // Set up next ray
         ray.origin = hitInfo.hitPoint + newDir * 1e-4;
         ray.direction = newDir;
+
+        // Store the current vertex
+        result.position = hitInfo.hitPoint;
+        result.normal = hitInfo.normal;
+        result.throughput = throughput;
+        result.objIndex = hitInfo.objIndex;
+        result.objType = hitInfo.type;
+        result.isEmissive = false;
+
+        lightPathsGlobal[vertexIndex].position = hitInfo.hitPoint;
+        lightPathsGlobal[vertexIndex].normal = hitInfo.normal;
+        lightPathsGlobal[vertexIndex].throughput = throughput;
+        lightPathsGlobal[vertexIndex].objIndex = hitInfo.objIndex;
+        lightPathsGlobal[vertexIndex].objType = hitInfo.type;
+
+        count++;
     }
-    
+    // Return the final vertex
     return count;
 }
 
-#define MAX_PATH_TECHNIQUES 10
+#define MAX_PATH_TECHNIQUES 20
 
 // Compute MIS weights according to the paper (Section 10.2)
 // This uses the balance or power heuristic from Chapter 9
 
 // Calculates the probability ratios needed for MIS weights
 float ComputeProbabilityRatio(Vertex vA, Vertex vNext, Vertex vPrev) {
-    // Compute the ratio of probabilities for generating this vertex
-    // from one side versus the other (equations 10.9 and 10.12)
-    
-    // Constants to prevent division by zero
+    // Use stored PDFs instead of recalculating
     const float EPSILON = 1e-5;
-    const float MAX_RATIO = 1e6; // Clamp extremely high ratios
+    const float MAX_RATIO = 1e6;
     
-    vec3 dirToNext = normalize(vNext.position - vA.position);
-    vec3 dirToPrev = normalize(vPrev.position - vA.position);
-    
-    // Calculate squared distances with safety threshold
-    float distNextSq = max(EPSILON, pow(length(vNext.position - vA.position), 2.0));
-    float distPrevSq = max(EPSILON, pow(length(vPrev.position - vA.position), 2.0));
-    
-    // Compute cosine terms with clamping
-    float cosToNext = max(EPSILON, dot(vA.normal, dirToNext));
-    float cosFromNext = max(EPSILON, dot(vNext.normal, -dirToNext));
-    float cosToPrev = max(EPSILON, dot(vA.normal, dirToPrev));
-    float cosFromPrev = max(EPSILON, dot(vPrev.normal, -dirToPrev));
-    
-    // Compute geometry terms with safety checks
-    float G_Next = cosToNext * cosFromNext / distNextSq;
-    float G_Prev = cosToPrev * cosFromPrev / distPrevSq;
-    
-    Material vMat =  VertexMat(vA);
     // Check for specular vertices - cannot be sampled bidirectionally
+    Material vMat = VertexMat(vA);
     if (vMat.specularProbability.x > 0.0) {
         return 0.0; // Cannot generate specular vertices from the other direction
     }
     
-    // Compute BSDF sampling PDFs (approximation for diffuse)
-    float bsdfNextProb = max(EPSILON, cosToNext / M_PI);
-    float bsdfPrevProb = max(EPSILON, cosToPrev / M_PI);
+    // Instead of recalculating all the geometry terms and BSDF probabilities,
+    // use the stored PDFs which represent the probability of sampling
+    // this path segment from each direction
+    float forwardPDF = vA.PDF; // PDF of sampling vNext from vA
+    float reversePDF = vPrev.PDF; // PDF of sampling vA from vPrev
     
-    // Calculate numerator and denominator separately for better control
-    float numerator = bsdfPrevProb * G_Prev;
-    float denominator = bsdfNextProb * G_Next;
-    
-    // Ensure denominator is not too small
-    if (denominator < EPSILON) {
-        return MAX_RATIO; // Return a large but finite value
+    // Prevent division by zero
+    if (forwardPDF < EPSILON) {
+        return MAX_RATIO;
     }
     
     // Calculate ratio with clamping to avoid extremely large values
-    float ratio = numerator / denominator;
+    float ratio = reversePDF / forwardPDF;
     
     // Clamp to reasonable range
     return clamp(ratio, 0.0, MAX_RATIO);
 }
-
-// Calculate all possible path sampling probabilities using the relations from equation 10.9
-void CalculatePathProbabilities(int camPathBase, int camCount, int lightPathBase, int lightCount, 
-                               inout float pathProbs[MAX_PATH_TECHNIQUES]) {
-    // We start with p_s,t = 1.0 (the actual sampling technique used)
-    // and compute all other p_i relative to this
-    int s = 0; // light vertices
-    int t = 0; // eye vertices
-    
-    // For a path of length k = s + t - 1, there are k + 2 possible sampling techniques
-    int k = camCount + lightCount - 2; // The -2 accounts for overlap at connecting vertices
-    
-    // Initialize all to 0 except the one we used
-    for (int i = 0; i < MAX_PATH_TECHNIQUES; i++) {
-        pathProbs[i] = 0.0;
-    }
-    
-    // Set the probability for the technique we actually used to 1.0
-    int actualTechniqueIndex = s;
-    pathProbs[actualTechniqueIndex] = 1.0;
-    
-    // Calculate ratios for techniques with more light vertices (s+1, s+2, ...)
-    float currentRatio = 1.0;
-    for (int i = s + 1; i <= k + 1 && i < MAX_PATH_TECHNIQUES; i++) {
-        // Get the vertices involved in this transition
-        Vertex vCam = cameraPathsGlobal[camPathBase + camCount - 1 - (i - s)];
-        Vertex vPrev = (i - s - 1 >= 0) ? lightPathsGlobal[lightPathBase + i - s - 1] : vCam;
-        Vertex vNext = (i - s < lightCount) ? lightPathsGlobal[lightPathBase + i - s] : vCam;
-        
-        // Calculate probability ratio
-        currentRatio *= ComputeProbabilityRatio(vCam, vNext, vPrev);
-        pathProbs[i] = currentRatio;
-    }
-    
-    // Calculate ratios for techniques with more eye vertices (s-1, s-2, ...)
-    currentRatio = 1.0;
-    for (int i = s - 1; i >= 0 && i < MAX_PATH_TECHNIQUES; i--) {
-        // Get the vertices involved in this transition
-        Vertex vLight = lightPathsGlobal[lightPathBase + s - i - 1];
-        Vertex vPrev = (s - i - 2 >= 0) ? lightPathsGlobal[lightPathBase + s - i - 2] : vLight;
-        Vertex vNext = (s - i - 1 < camCount) ? cameraPathsGlobal[camPathBase + s - i - 1] : vLight;
-        
-        // Calculate probability ratio
-        currentRatio *= ComputeProbabilityRatio(vLight, vNext, vPrev);
-        pathProbs[i] = currentRatio;
-    }
-}
-
 // Balance heuristic from the paper (Chapter 9)
 float BalanceHeuristic(float pdfA, float sumPdf) {
     return pdfA / sumPdf;
@@ -2020,306 +1675,153 @@ bool IsVisibleToSky(vec3 position, vec3 direction) {
     
     return true;  // No hits found
 }
-vec3 ConnectPathsProgressively(int camPathBase, int camCount, int lightPathBase, int lightCount, inout vec2 seed) {
-    vec3 contribution = vec3(0.0);
+
+// Calculate all possible path sampling probabilities using the relations from equation 10.9
+void CalculatePathProbabilities(int camPathBase, int camCount, int lightPathBase, int lightCount, 
+                               inout float pathProbs[MAX_PATH_TECHNIQUES]) {
+    // We start with p_s,t = 1.0 (the actual sampling technique used)
+    // and compute all other p_i relative to this
+    int s = 0; // light vertices
+    int t = 0; // eye vertices
+    
+    // For a path of length k = s + t - 1, there are k + 2 possible sampling techniques
+    int k = camCount + lightCount - 2; // The -2 accounts for overlap at connecting vertices
+    
+    // Initialize all to 0 except the one we used
+    for (int i = 0; i < MAX_PATH_TECHNIQUES; i++) {
+        pathProbs[i] = 0.0;
+    }
+    
+    // Set the probability for the technique we actually used to 1.0
+    int actualTechniqueIndex = s;
+    pathProbs[actualTechniqueIndex] = 1.0;
+    
+    // Calculate ratios for techniques with more light vertices (s+1, s+2, ...)
+    float currentRatio = 1.0;
+    for (int i = s + 1; i <= k + 1 && i < MAX_PATH_TECHNIQUES; i++) {
+        // Get the vertices involved in this transition
+        Vertex vCam = cameraPathsGlobal[camPathBase + camCount - 1 - (i - s)];
+        Vertex vPrev = (i - s - 1 >= 0) ? lightPathsGlobal[lightPathBase + i - s - 1] : vCam;
+        Vertex vNext = (i - s < lightCount) ? lightPathsGlobal[lightPathBase + i - s] : vCam;
+        
+        // Calculate probability ratio
+        currentRatio *= ComputeProbabilityRatio(vCam, vNext, vPrev);
+        pathProbs[i] = currentRatio;
+    }
+    
+    // Calculate ratios for techniques with more eye vertices (s-1, s-2, ...)
+    currentRatio = 1.0;
+    for (int i = s - 1; i >= 0 && i < MAX_PATH_TECHNIQUES; i--) {
+        // Get the vertices involved in this transition
+        Vertex vLight = lightPathsGlobal[lightPathBase + s - i - 1];
+        Vertex vPrev = (s - i - 2 >= 0) ? lightPathsGlobal[lightPathBase + s - i - 2] : vLight;
+        Vertex vNext = (s - i - 1 < camCount) ? cameraPathsGlobal[camPathBase + s - i - 1] : vLight;
+        
+        // Calculate probability ratio
+        currentRatio *= ComputeProbabilityRatio(vLight, vNext, vPrev);
+        pathProbs[i] = currentRatio;
+    }
+}
+
+// Connects all vertices between camera and light paths, not just endpoints
+vec3 ConnectAllPaths(int camPathBase, int lightPathBase, int camDepth, int lightDepth, inout vec2 seed) {
+    vec3 totalContribution = vec3(0.0);
     float pathProbs[MAX_PATH_TECHNIQUES];
 
-    // Calculate which strategy to use this frame
-    int progressiveIndex = int(Frame) % ProgressiveSteps;
+    Vertex cameraPathEnd = cameraPathsGlobal[camPathBase + camDepth - 1];
+    Vertex lightPathEnd = lightPathsGlobal[lightPathBase + lightDepth - 1];   
     
-    // Determine which vertices to connect
-    int maxCamVertices = min(3, camCount);
-    int maxLightVertices = min(3, lightCount);
-    
-    int camIndex = progressiveIndex / maxLightVertices;
-    int lightIndex = progressiveIndex % maxLightVertices;
-    
-    Vertex lastCamVertex = cameraPathsGlobal[camPathBase + camCount - 1];
     Ray skyRay;
     skyRay.origin = camera.position;
-    skyRay.direction = normalize(lastCamVertex.position - camera.position);
-    Material hitMaterial = GetMaterial(lastCamVertex.objIndex, lastCamVertex.objType, skyRay);
-
-    // Check for direct camera hit on light source (s=0, t>=2)
-    if (camCount > 1 && hitMaterial.emmisionStrength.x >= 0) {
+    skyRay.direction = normalize(cameraPathEnd.position - camera.position);
+    Material hitMaterial = GetMaterial(cameraPathEnd.objIndex, cameraPathEnd.objType, skyRay);
+        
+    if (cameraPathEnd.emission.x > 0.0 && camDepth > 1) {
         // Calculate path probabilities for this path
-        CalculatePathProbabilities(camPathBase, camCount, lightPathBase, 0, pathProbs);
-        
+        CalculatePathProbabilities(camPathBase, camDepth, lightPathBase, 0, pathProbs);
+            
         // Compute MIS weight (use 0 for s=0 technique index)
-        float weight = ComputeMISWeight(pathProbs, 0, camCount + 1, 2); // beta=2 for power heuristic
-        // Get material (handles sky case automatically)
-        
+        float weight = ComputeMISWeight(pathProbs, 0, camDepth + 1, 2); // beta=2 for power heuristic
+            
         // Add contribution
-        //contribution += lastCamVertex.throughput * 
-         //             hitMaterial.emmisionColor * 
-          //            hitMaterial.emmisionStrength * weight;
+        totalContribution +=  cameraPathEnd.emission * weight;
+    }
+    // Early out if either path is invalid
+    if (all(equal(cameraPathEnd.throughput, vec3(0.0))) || all(equal(lightPathEnd.throughput, vec3(0.0)))) {
+        return totalContribution;
     }
     
-    // For each frame, connect only a specific pair of vertices
-    if (camIndex < maxCamVertices) {
-        int i = camIndex;
-        int j = lightIndex;
-        
+    // Connect each camera vertex with each light vertex
+    for (int s = 2; s <= camDepth; s++) {
+        for (int t = 1; t <= lightDepth; t++) {
 
-        // Get vertices
-        Vertex vCam = cameraPathsGlobal[camPathBase + i];
-        Vertex vLight = lightPathsGlobal[lightPathBase + j];
+            Vertex cameraPath = cameraPathsGlobal[camPathBase + s - 1];
+            Vertex lightPath = lightPathsGlobal[lightPathBase + t - 1];
 
-        // Set up rays for material lookups
-        Ray camRay, lightRay;
-        camRay.origin = camera.position;
-        camRay.direction = normalize(vCam.position - camera.position);
-
-        lightRay.origin = camera.position;
-        lightRay.direction = normalize(vLight.position - camera.position);
-               
-        Material cMat = GetMaterial(vCam.objIndex, vCam.objType, camRay);
-        Material lMat = GetMaterial(vLight.objIndex, vLight.objType, lightRay);
-               
-        // Skip if either vertex is specular
-        if (cMat.specularProbability.x != 0 && lMat.specularProbability.x != 0) {      
-            // Handle sky connections
-            float skyDistance = 100000.0;
-            bool isSkyLight = length(vLight.position - camera.position) > skyDistance * 0.9;
-            
-            if (isSkyLight) {
-                // Sky vertex handling
-                vec3 skyDir = normalize(vLight.position - vCam.position);
-                
-                if (dot(vCam.normal, skyDir) > 0.0) {
-                    // Check visibility to sky
-                    bool skyVisible = IsVisibleToSky(vCam.position, skyDir);
-                    
-                    if (skyVisible) {
-                        // Get material for camera vertex
-                        Material camMaterial = GetMaterial(vCam.objIndex, vCam.objType, camRay);
-                        
-                        // For sky light, create a specific ray direction
-                        Ray skyLightRay;
-                        skyLightRay.origin = vCam.position;
-                        skyLightRay.direction = skyDir;
-                        
-                        // Get sky light material
-                        Material skyMaterial = GetMaterial(-1, -1, skyLightRay);
-                        
-                        // Apply MIS weight
-                        float weight = SimplifiedMISWeight(j, i);
-                        
-                        // Calculate sky contribution
-                        vec3 skyContrib = vCam.throughput * camMaterial.diffuseColor * 
-                                      max(0.0, dot(vCam.normal, skyDir)) / M_PI * 
-                                      skyMaterial.emmisionColor * skyMaterial.emmisionStrength * weight;
-                        
-                        // Add scaled contribution
-                        contribution += skyContrib * float(ProgressiveSteps);
-                    }
-                }
-            } else {
-                // Regular connection
-                vec3 connectionDir = normalize(vLight.position - vCam.position);
-                float distance = length(vLight.position - vCam.position);
-                
-                float cosCam = max(0.0, dot(vCam.normal, connectionDir));
-                float cosLight = max(0.0, dot(vLight.normal, -connectionDir));
-                
-                if (cosCam > 0.0 && cosLight > 0.0) {
-                    bool isVisible = FastVisibilityTest(vCam.position, vLight.position);
-                    
-                    if (isVisible) {
-                        // Get materials
-
-                        // Calculate BRDFs
-                        vec3 brdfCam = cMat.diffuseColor / M_PI;
-                        vec3 brdfLight = lMat.diffuseColor / M_PI;
-                        
-                        // Geometric factor
-                        float G = cosCam * cosLight / (distance * distance);
-                        
-                        // Connection contribution with MIS
-                        vec3 connection = vLight.throughput * vCam.throughput * brdfCam * brdfLight;
-                        CalculatePathProbabilities(camPathBase, i+1, lightPathBase, j+1, pathProbs);
-            
-                        int s = j;  // Light subpath vertices
-                        int t = i;  // Eye subpath vertices
-                        int k = s + t;  // Path length
-                        // Compute MIS weight using power heuristic (beta=2)
-                        float weight = ComputeMISWeight(pathProbs, s, k+2, 2);
-                        
-                        //contribution += connection * weight * float(ProgressiveSteps);
-                    }
-                }
-            }
-        }
-    }
-    
-    for (int i = 0; i < camCount; i++) {
-        Vertex vCam = cameraPathsGlobal[camPathBase + i];
-        vec3 emission = vCam.emmision;
-    
-        if (any(greaterThan(emission, vec3(0.001)))) {
-            // Calculate path probabilities for this path
-            CalculatePathProbabilities(camPathBase, i+1, lightPathBase, 0, pathProbs);
-        
-            // Compute MIS weight 
-            float weight = ComputeMISWeight(pathProbs, 0, i+2, 2); // beta=2 for power heuristic
-        
-            // Add emission contribution with MIS weighting
-            contribution += vCam.throughput * emission;
-        }
-    }
-
-    // Check for vertex emissions along light path
-    for (int j = 1; j < lightCount; j++) { // Start at 1 to skip initial light
-        Vertex vLight = lightPathsGlobal[lightPathBase + j];
-        vec3 emission = vLight.emmision;
-    
-        if (any(greaterThan(emission, vec3(0.001)))) {
-            // Calculate path probabilities for this path
-            CalculatePathProbabilities(camPathBase, 0, lightPathBase, j+1, pathProbs);
-        
-            // Compute MIS weight
-            float weight = ComputeMISWeight(pathProbs, j, j+2, 2);
-        
-            // Add emission contribution with MIS weighting
-            contribution += vLight.throughput * emission;
-        }
-    }
-    return contribution;
-}
-
-vec3 ConnectPaths(int camPathBase, int camCount, int lightPathBase, int lightCount, inout vec2 seed) {
-    vec3 contribution = vec3(0.0);
-    float pathProbs[MAX_PATH_TECHNIQUES];
-    
-    // Check for direct camera hit on light source (s=0, t>=2)
-    if (camCount > 1) {
-        Vertex lastCamVertex = cameraPathsGlobal[camPathBase + camCount - 1];
-        Ray skyRay;
-        skyRay.origin = camera.position;
-        skyRay.direction = normalize(lastCamVertex.position - camera.position);
-        Material hitMaterial = GetMaterial(lastCamVertex.objIndex, lastCamVertex.objType, skyRay);
-        
-        if (hitMaterial.emmisionStrength.x > 0.0) {
-            // Calculate path probabilities for this path
-            CalculatePathProbabilities(camPathBase, camCount, lightPathBase, 0, pathProbs);
-            
-            // Compute MIS weight (use 0 for s=0 technique index)
-            float weight = ComputeMISWeight(pathProbs, 0, camCount + 1, 2); // beta=2 for power heuristic
-            
-            // Add contribution
-            contribution += lastCamVertex.throughput * 
-                          hitMaterial.emmisionColor * 
-                          hitMaterial.emmisionStrength * weight;
-        }
-    }
-    
-    // Connect all possible camera and light vertices
-    for (int i = 0; i < camCount; i++) {
-        for (int j = 0; j < lightCount; j++) {
-            // Get vertices
-            Vertex vCam = cameraPathsGlobal[camPathBase + i];
-            Vertex vLight = lightPathsGlobal[lightPathBase + j];
-            
-            // Set up rays for material lookups
+            // Skip invalid combinations (need at least one vertex from each path)
             Ray camRay, lightRay;
             camRay.origin = camera.position;
-            camRay.direction = normalize(vCam.position - camera.position);
-            
+            camRay.direction = normalize(cameraPath.position - camera.position);
+    
             lightRay.origin = camera.position;
-            lightRay.direction = normalize(vLight.position - camera.position);
-            
-            Material cMat = GetMaterial(vCam.objIndex, vCam.objType, camRay);
-            Material lMat = GetMaterial(vLight.objIndex, vLight.objType, lightRay);
-            
-            // Skip if either vertex is specular (cannot be connected)
-            if (cMat.specularProbability.x == 0.0 && lMat.specularProbability.x == 0.0 &&
-                cMat.isTranslucent == 0.0 && lMat.isTranslucent == 0.0) {
-                // Handle sky connections
-                float skyDistance = 100000.0;
-                bool isSkyLight = length(vLight.position - camera.position) > skyDistance * 0.9;
-                
-                if (isSkyLight) {
-                    // Sky vertex handling
-                    vec3 skyDir = normalize(vLight.position - vCam.position);
-                    
-                    if (dot(vCam.normal, skyDir) > 0.0) {
-                        // Check visibility to sky
-                        bool skyVisible = IsVisibleToSky(vCam.position, skyDir);
-                        
-                        if (skyVisible) {
-                            // Get material for camera vertex
-                            Material camMaterial = GetMaterial(vCam.objIndex, vCam.objType, camRay);
-                            
-                            // For sky light, create a specific ray direction
-                            Ray skyLightRay;
-                            skyLightRay.origin = vCam.position;
-                            skyLightRay.direction = skyDir;
-                            
-                            // Get sky light material
-                            Material skyMaterial = GetMaterial(-1, -1, skyLightRay);
-                            
-                            // Calculate path probabilities
-                            CalculatePathProbabilities(camPathBase, i+1, lightPathBase, j+1, pathProbs);
-                            int s = j;  // Light subpath vertices
-                            int t = i;  // Eye subpath vertices
-                            int k = s + t;  // Path length
-                            
-                            // Compute MIS weight
-                            float weight = ComputeMISWeight(pathProbs, s, k+2, 2);
-                            
-                            // Calculate sky contribution
-                            vec3 skyContrib = vCam.throughput * camMaterial.diffuseColor * 
-                                          max(0.0, dot(vCam.normal, skyDir)) / M_PI * 
-                                          skyMaterial.emmisionColor * skyMaterial.emmisionStrength * weight;
-                            
-                            // Add contribution
-                            contribution += skyContrib;
-                        }
-                    }
-                } else {
-                    // Regular connection between diffuse vertices
-                    vec3 connectionDir = normalize(vLight.position - vCam.position);
-                    float distance = length(vLight.position - vCam.position);
-                    
-                    float cosCam = max(0.0, dot(vCam.normal, connectionDir));
-                    float cosLight = max(0.0, dot(vLight.normal, -connectionDir));
-                    
-                    if (cosCam > 0.0 && cosLight > 0.0) {
-                        bool isVisible = FastVisibilityTest(vCam.position, vLight.position);
-                        
-                        if (isVisible) {
-                            // Calculate BRDFs
-                            vec3 brdfCam = cMat.diffuseColor / M_PI;
-                            vec3 brdfLight = lMat.diffuseColor / M_PI;
-                            
-                            // Geometric factor
-                            float G = cosCam * cosLight / (distance * distance);
-                            
-                            // Calculate path probabilities for MIS
-                            CalculatePathProbabilities(camPathBase, i+1, lightPathBase, j+1, pathProbs);
-                            
-                            int s = j;  // Light subpath vertices
-                            int t = i;  // Eye subpath vertices
-                            int k = s + t;  // Path length
-                            
-                            // Compute MIS weight using power heuristic (beta=2)
-                            float weight = ComputeMISWeight(pathProbs, s, k+2, 2);
-                            
-                            // Connection contribution with MIS
-                            vec3 connection = vCam.throughput * brdfCam * G * brdfLight * vLight.throughput;
-                            contribution += connection * weight;
-                        }
-                    }
-                }
+            lightRay.direction = normalize(lightPath.position - camera.position);
+    
+            // Get materials at each endpoint
+            Material cMat = GetMaterial(cameraPath.objIndex, cameraPath.objType, camRay);
+            Material lMat = GetMaterial(lightPath.objIndex, lightPath.objType, lightRay);
+    
+            // Skip if either endpoint is specular (cannot be connected)
+            if (cMat.specularProbability.x > 0.0 || lMat.specularProbability.x > 0.0 ||
+                cMat.isTranslucent != 0 || lMat.isTranslucent != 0) {
+                return totalContribution;
             }
+    
+            // Handle sky connections
+            float skyDistance = 10000.0;
+
+            bool isSkyLightCam = length(cameraPath.position - camera.position) > skyDistance * 0.9;
+            if(isSkyLightCam) continue;
+
+            // Regular connection between diffuse vertices
+            vec3 connectionDir = normalize(lightPath.position - cameraPath.position);
+            float distance = length(lightPath.position - cameraPath.position);
+        
+            float cosCam = max(0.0, dot(cameraPath.normal, connectionDir));
+            float cosLight = max(0.0, dot(lightPath.normal, -connectionDir));
+        
+            if (cosCam > 0.0 && cosLight > 0.0) {
+                bool isVisible = FastVisibilityTest(cameraPath.position, lightPath.position);
+            
+                if (isVisible) {
+                    // Calculate BRDFs
+                    vec3 brdfCam = cMat.diffuseColor / M_PI;
+                    vec3 brdfLight = lMat.diffuseColor / M_PI;
+                
+                    // Geometric factor
+                    float G = cosCam * cosLight / (distance * distance);
+                
+                    // Use a simplified MIS weight (approximation)
+                    CalculatePathProbabilities(camPathBase, t+1, lightPathBase, s+1, pathProbs);
+            
+                    int k = s + t;  // Path length
+                    // Compute MIS weight using power heuristic (beta=2)
+                    float weight = ComputeMISWeight(pathProbs, s, k+2, 2);
+                
+                    // Connection contribution
+                    vec3 connection = lightPath.emission * (cameraPath.throughput + cameraPath.emission) * brdfCam * brdfLight * G;
+                    totalContribution += connection * weight;
+                }
+            }  
         }
     }
     
-    return contribution;
+    return totalContribution;
 }
 
-// Modified BidirectionalTrace function to use progressive sampling
+
+// Simplified bidirectional path tracing
 vec3 BidirectionalTrace(vec3 rayDir, inout vec2 seed) {
+
     // Calculate this thread's offset in the global buffers
     int globalWidth = int(gl_NumWorkGroups.x * LOCAL_SIZE_X);
     int threadIndex = int(gl_GlobalInvocationID.x + gl_GlobalInvocationID.y * globalWidth);
@@ -2327,18 +1829,14 @@ vec3 BidirectionalTrace(vec3 rayDir, inout vec2 seed) {
     // Calculate base indices for this thread's paths in the global buffers
     int camPathBase = threadIndex * MAX_PATH_LENGTH;
     int lightPathBase = threadIndex * MAX_PATH_LENGTH;
-    
-    // Build the camera subpath directly into the global buffer
-    int camCount = BuildCameraPathSSBO(camPathBase, 6, seed, rayDir);
-    
-    // Build the light subpath directly into the global buffer
-    int lightCount = BuildLightPathSSBO(lightPathBase, 5, seed);
-    
-    // Use the progressive approach:
-    // Only consider a subset of connections based on the current frame
-    return ConnectPaths(camPathBase, camCount, lightPathBase, lightCount, seed);
-    //  return vec3(0.0);
 
+    // Generate camera path
+    int camDepth = TraceCameraPath(rayDir, LENSSUBPATHS, camPathBase, seed);
+    
+    // Generate light path
+    int lightDepth = TraceLightPath(seed, LIGHTSUBPATHS, lightPathBase);
+    // Connect endpoints and return the contribution
+    return ConnectAllPaths(camPathBase, lightPathBase, camDepth, lightDepth, seed);
 }
 ///////////////////////////////
 //  SCREEN COORDINATE HELPERS  //
@@ -2480,7 +1978,7 @@ void main() {
                         ray.direction = rayDir;
 
                         // Trace the ray and accumulate the sample color.
-                        vec3 sampleColor = FullTrace(ray, stateCopy);
+                        vec3 sampleColor = BidirectionalTrace(ray, stateCopy);
                         burnInSampleColor += sampleColor;
                         burnInSampleLum += luminance(sampleColor, false); // Compute luminance.
                         burnIns++;

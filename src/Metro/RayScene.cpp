@@ -25,6 +25,11 @@ const int DEBUGTHRESHOLD = 30;
 const int RAYSPERPIXEL = 1;
 const int METROPLIS_MUTATIONS = 1;
 const int BOUNCES = 12;
+const int BIDIRECTIONALMAXPATHS = 10;
+
+const int LENSSUBPATHS = 8;
+const int LIGHTSUBPATHS = 8;
+
 bool wasPressed = false;
 
 // Render mode enumeration
@@ -39,10 +44,11 @@ enum ScenePreset {
     TableAndChairs,
     ChessCaustics,
     IndoorDiffuse,
+    Example
 };
 
-const RenderMode renderMode = PATH_TRACING_BIDIRECTIONAL;
-const ScenePreset preset = ChessCaustics;
+const RenderMode renderMode = PATH_TRACING;
+const ScenePreset preset = IndoorDiffuse;
 
 // Define workgroup and dispatch sizes
 const int LAYOUT_SIZE_X = 8;
@@ -95,6 +101,25 @@ RayScene::RayScene(Window& win) :
     float skyStrength = SKYSTRENGTH;
 
     switch (preset) {
+    case ScenePreset::Example: {
+        Material mat;
+        mat.emmisionColor = glm::vec3(0.0f);
+        mat.emmisionStrength = 0.0f;
+        mat.diffuseColor = glm::vec3(1.0f, 0.5f, 0.5f);          // slightly gray wallsBad Quality
+        mat.specularChance = 0.0f;
+        mat.smoothness = 0.0f;
+
+        ASSModel model = ASSModel("models/InteriorTest.obj");
+        scale = 30.1f;
+        translate = glm::vec3(0, 20, 0);
+        camPos = glm::vec3(-0.64f, -48.49f, 20.38f);
+        camOri = glm::vec3(-0.01f, -0.07f, -1.00f);
+        skyStrength = 0.1f;
+
+        model.ToTriangles(mat, scale, translate, computeShader, sceneBVH, false, false);
+        break;
+    }
+
     case ScenePreset::CornellBox: {
         Material mat;
         mat.emmisionColor = glm::vec3(0.0f);
@@ -127,16 +152,16 @@ RayScene::RayScene(Window& win) :
         translate = glm::vec3(0, -23, 0);
         camPos = glm::vec3(-10.22f, 44.09f, -20.94f);
         camOri = glm::vec3(0.58f, -0.81f, 0.03f);
-        skyStrength = 0.1f;
+        skyStrength = 0.02f;
 
         Material m2;
         m2.emmisionColor = glm::vec3(0.0f, 0.0f, 0.0f);
         m2.emmisionStrength = 0;
-        m2.diffuseColor = glm::vec3(0.91f, 0.98f, 0.98f );
+        m2.diffuseColor = glm::vec3(0.61f, 0.81f, 0.78f );
         m2.specularChance = 0.2f;
         m2.smoothness = 0.2f;
         m2.isTranslucent = 1.0f;
-        m2.refractiveIndex = 1.4404f;
+        m2.refractiveIndex = 1.2804f;
 
         ASSModel plane("models/uploads_files_3034691_Absinthium_Glass.obj");
 
@@ -207,7 +232,7 @@ RayScene::RayScene(Window& win) :
     if (renderMode == PATH_TRACING_BIDIRECTIONAL) {
 
         // Define constants for path tracing
-        const int MAX_PATH_LENGTH = 6;  // Must match your shader definition
+        const int MAX_PATH_LENGTH = BIDIRECTIONALMAXPATHS;  // Must match your shader definition
 
         // Create properly sized vertex buffers for paths
         // Define a dummy Vertex aligned with your shader's Vertex structure
@@ -396,7 +421,7 @@ void RayScene::AddSurfaces() {
     material2.smoothness = 0;
 
     circle2.material = material2;
-    //circle2.position = glm::vec3(-14.0f, 25.1f, -18.0f);
+    //circle2.position = glm::vec3(-14.0f, 35.1f, -18.0f);
     circle2.position = glm::vec3(0.0f, 50.0f, -55.0f);
 
     circle2.radius = 6.5f;
@@ -486,6 +511,9 @@ bool RayScene::SaveScreenshot(double timeInSeconds) {
         break;
     case ScenePreset::IndoorDiffuse:
         sceneName = "IndoorDiffuse";
+        break;
+    case ScenePreset::Example:
+        sceneName = "Example";
         break;
     default:
         sceneName = "Unknown";
@@ -653,6 +681,9 @@ void RayScene::OnBufferSwap(Window& win) {
     computeShader.SetParameterInt(METROPLIS_MUTATIONS, "NumberOfMutations");
     computeShader.SetParameterInt(DEBUGTHRESHOLD, "DebugThreshold");
     computeShader.SetParameterInt(DEBUGTEST, "DebugTest");
+    computeShader.SetParameterInt(LENSSUBPATHS, "LENSSUBPATHS");
+    computeShader.SetParameterInt(LIGHTSUBPATHS, "LIGHTSUBPATHS");
+
     computeShader.SetParameterInt(1, "BurnInSamples");
 
     int rMode = static_cast<int>(renderMode);
@@ -695,7 +726,7 @@ void RayScene::OnBufferSwap(Window& win) {
 
     textShader.Activate();
     // Render FPS text on the screen
-    text.RenderText(textShader, ss.str(), 25.0f, 25.0f, 1.0f, glm::vec3(1.0f));
+    //text.RenderText(textShader, ss.str(), 25.0f, 25.0f, 1.0f, glm::vec3(1.0f));
 
     auto elapsedSinceLastScreenshot = std::chrono::duration_cast<std::chrono::seconds>(
         currentTimePoint - lastScreenshotTime).count();
